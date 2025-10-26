@@ -1,0 +1,2 @@
+# RoboTraderM1
+FLUXO DE VELAS + LOGICA DO PREÇO 
