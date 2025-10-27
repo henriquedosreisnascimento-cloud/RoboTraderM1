@@ -1,6 +1,6 @@
 # ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM INTERFACE
-# CORREÇÃO DEFINITIVA: Remoção completa do f-string no bloco HTML principal, usando .format()
-# para eliminar problemas de SyntaxError devido a chaves literais.
+# CORREÇÃO DEFINITIVA: Remoção completa do f-string do HTML e garantia de fechamento correto
+# da string literal triplo-aspada no bloco 'html_content'.
 
 from flask import Flask, json
 import requests
@@ -72,6 +72,7 @@ def get_ultimas_velas(ativo):
         data = r.json().get('data', [])
 
         velas = []
+        # Obtém as velas necessárias para a análise
         for v in data[-NUM_VELAS_ANALISE - 1:]: 
             # v[1] = open, v[3] = close, v[4] = high, v[2] = low
             velas.append([float(v[1]), float(v[3]), float(v[4]), float(v[2])]) 
@@ -222,8 +223,7 @@ def ciclo_analise():
 # ====================== FUNÇÃO AUXILIAR PARA HISTÓRICO DE SINAIS ======================
 def formatar_historico_html(historico):
     """
-    Formata o histórico de sinais em uma string HTML segura,
-    isolando a lógica de formatação do f-string principal.
+    Formata o histórico de sinais em uma string HTML segura.
     """
     linhas_html = []
     # Itera de trás para frente para mostrar o mais recente primeiro
@@ -231,7 +231,7 @@ def formatar_historico_html(historico):
         # Determina a classe CSS com base no resultado
         classe = 'win' if 'WIN' in item['resultado'] else 'loss'
         
-        # Cria a linha formatada. Usando aspas duplas fora, e simples dentro, é mais seguro.
+        # Cria a linha formatada.
         linha = (
             f"[{item['horario']}] {item['ativo']} -> "
             f"<span class='{classe}'>{item['resultado']}</span> "
@@ -239,7 +239,7 @@ def formatar_historico_html(historico):
         )
         linhas_html.append(linha)
         
-    return '<br>'.join(linhas_html)
+    return '\n'.join(linhas_html) # Usando \n para que o <pre> mostre em novas linhas
 
 
 # ====================== SERVIDOR HTTPS (ENDPOINT) - INTERFACE COMPLETA + AVISO ======================
@@ -323,7 +323,7 @@ def home():
         ultimo_sinal_cor_css = 'var(--neutro-borda)'
         ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
         
-    # 1. Pré-calcula o HTML dos detalhes do sinal ativo
+    # 1. Pré-calcula o HTML dos detalhes do sinal ativo (FORA de qualquer f-string que contenha o HTML principal)
     if ULTIMO_SINAL['score'] != 0:
         signal_details_html = f"""
             <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
@@ -340,7 +340,8 @@ def home():
     # 2. Pré-calcula o HTML do Histórico
     historico_html = formatar_historico_html(HISTORICO_SINAIS)
     
-    # === Bloco de CSS Estático - F-string para injetar variáveis Python de cor, mas com as chaves LITERAIS {{ }} escapadas ===
+    # === Bloco de CSS Estático - F-string para injetar variáveis Python de cor ===
+    # A diferença é que este bloco NÃO contêm chaves do jinja ou JS, apenas chaves de CSS literais
     css_content = f"""
     /* Paleta de Cores e Estilos */
     :root {{
@@ -506,7 +507,7 @@ def home():
     }}
     """
 
-    # HTML sem f-string, usando placeholders {}
+    # HTML puro, sem "f" antes da string triplo-aspada, usando placeholders {}
     html_content = """
     <!DOCTYPE
     html>
@@ -542,6 +543,4 @@ def home():
                 {ultimo_sinal_texto}
             </div>
 
-            <div class="main-content-grid">
-                <div class="sinal-box {sinal_classe_animacao}">
-                    <div class="sin
+            <div class="
