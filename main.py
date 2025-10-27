@@ -1,5 +1,5 @@
-# ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM CAIXA DE AVISO VISUAL
-# Corrigido para incluir a interface HTML e resolver o erro de sintaxe.
+# ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM INTERFACE
+# CORREÇÃO: Foi corrigido o erro de SyntaxError na geração condicional do HTML.
 
 from flask import Flask, json
 import requests
@@ -297,7 +297,27 @@ def home():
     else:
         ultimo_sinal_cor = 'var(--neutro-borda)'
         ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
-
+        
+    # =======================================================
+    # CORREÇÃO DE SYNTAX APLICADA AQUI: Geração Condicional do HTML
+    # =======================================================
+    
+    # 1. Pré-calcula o HTML dos detalhes do sinal ativo
+    if ULTIMO_SINAL['score'] != 0:
+        # Se houver sinal forte, mostra detalhes do trade
+        signal_details_html = f"""
+            <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
+            <div class="data-item">Preço de Entrada: <strong>{ULTIMO_SINAL['preco_entrada']:.5f}</strong></div>
+            <div class="data-item">Força (Score): <strong>{ULTIMO_SINAL['score']}</strong></div>
+        """
+        analise_detail_html = ""
+    else:
+        # Se NEUTRO, mostra apenas o horário da última análise
+        signal_details_html = ""
+        analise_detail_html = f"""
+            <div class="data-item">Última Análise do Robô: <strong>{horario_exibicao}</strong></div>
+        """
+        
     # HTML com CSS e o elemento de Áudio
     html_content = f"""
     <!DOCTYPE html>
@@ -487,21 +507,4 @@ def home():
             </div>
 
             <div class="warning-message">
-                ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para liberar o som.
-            </div>
-
-            <div class="last-signal-box">
-                {ultimo_sinal_texto}
-            </div>
-
-            <div class="main-content-grid">
-                <div class="sinal-box {sinal_classe_animacao}">
-                    <div class="sinal-header">
-                        {sinal_exibicao} {ativo_exibicao}
-                    </div>
-
-                    {'<div class="data-item">Horário do Sinal Ativo: <strong>' + horario_exibicao + '</strong></div>' if ULTIMO_SINAL['score'] != 0 else ''}
-                    {'<div class="data-item">Preço de Entrada: <strong>' + str(ULTIMO_SINAL['preco_entrada']) + '</strong></div>' if ULTIMO_SINAL['score'] != 0 else ''}
-                    {'<div class="data-item">Força (Score): <strong>' + str(ULTIMO_SINAL['score']) + '</strong></div>' if ULTIMO_SINAL['score'] != 0 else ''}
-
-                    {'<div class="data-item">Última Análise do Robô: <strong>' + horario_exibicao + '</strong></div>' if ULTIMO_SINAL['score'] =
+                ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para l
