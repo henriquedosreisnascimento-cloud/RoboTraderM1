@@ -324,6 +324,7 @@ def home():
         ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
         
     # 1. Pré-calcula o HTML dos detalhes do sinal ativo (FORA de qualquer f-string que contenha o HTML principal)
+    # ATENÇÃO: Mudando para aspas simples triplas (''') para evitar conflito de sintaxe.
     if ULTIMO_SINAL['score'] != 0:
         signal_details_html = f"""
             <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
@@ -340,9 +341,9 @@ def home():
     # 2. Pré-calcula o HTML do Histórico
     historico_html = formatar_historico_html(HISTORICO_SINAIS)
     
-    # === Bloco de CSS Estático - F-string para injetar variáveis Python de cor ===
-    # A diferença é que este bloco NÃO contêm chaves do jinja ou JS, apenas chaves de CSS literais
-    css_content = f"""
+    # === Bloco de CSS Estático - USANDO ASPAS TRIPLAS SIMPLES (''') para segurança ===
+    # Isso garante que o Python não interprete acidentalmente qualquer """ dentro do CSS como o fim do html_content.
+    css_content = f'''
     /* Paleta de Cores e Estilos */
     :root {{
         --bg-primary: #1C2331; /* Fundo suave */
@@ -505,8 +506,8 @@ def home():
         color: var(--text-primary);
         font-weight: 600;
     }}
-    """
-
+    '''
+    
     # HTML puro, sem "f" antes da string triplo-aspada, usando placeholders {}
     html_content = """
     <!DOCTYPE
@@ -539,8 +540,4 @@ def home():
                 ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para liberar o som.
             </div>
 
-            <div class="last-signal-box">
-                {ultimo_sinal_texto}
-            </div>
-
-            <div class="
+        
