@@ -1,7 +1,6 @@
 # main.py
-# ROBÔ TRADER M1 (WEB) - VERSÃO SL/TP SIMULADO
-# Adicionada a simulação de Stop Loss (SL) e Take Profit (TP) de 0.05%
-# para um backtesting de resultados mais realista.
+# ROBÔ TRADER M1 (WEB) - VERSÃO ASSERTIVIDADE POR CONFLUÊNCIA (3 REGRAS)
+# Implementa: Filtro de 3 Regras (Momentum, Bollinger, RSI) e Assertividade de 100%.
 
 from flask import Flask, Response
 import requests
@@ -19,22 +18,24 @@ TIMEZONE_BR = 'America/Sao_Paulo'
 ATIVOS_MONITORADOS = ['BTC-USDT', 'ETH-USDT', 'EUR-USDT']
 API_BASE_URL = 'https://api.kucoin.com/api/v1/market/candles'
 INTERVALO_M1 = '1min'
-INTERVALO_M5 = '5min' 
-NUM_VELAS_ANALISE = 3
-SCORE_MINIMO_SINAL = 2.0
+# INTERVALO_M5 foi removido
+NUM_VELAS_ANALISE_M1 = 30 
+ASSERTIVIDADE_MINIMA = 100.0 # Requer 100% de confluência (3/3 regras)
 MAX_HISTORICO = 10
-# Novo: Stop Loss e Take Profit definidos em 0.05%
 PERCENTUAL_SL_TP = 0.0005 
+# Configurações dos Indicadores
+PERIOD_BB = 14
+STD_DEV_BB = 2
+PERIOD_RSI = 14
+RSI_OVERBOUGHT = 70.0
+RSI_OVERSOLD = 30.0
+
 # Intervalo de atualização do dashboard via SSE
 DASHBOARD_REFRESH_RATE_SECONDS = 5 
-
-# URL DO SOM DE ALERTE
 URL_ALERTE_SONORO = "https://www.soundhelix.com/examples/audio/Wave-beep.wav"
 
 # ====================== INICIALIZAÇÃO DO FLASK ======================
 app = Flask(__name__)
-
-# Lock para garantir acesso seguro às variáveis globais
 state_lock = Lock()
 
 # ====================== VARIÁVEIS GLOBAIS DE ESTADO ======================
@@ -42,22 +43,69 @@ def get_horario_brasilia():
     fuso_brasil = pytz.timezone(TIMEZONE_BR)
     return datetime.now(fuso_brasil)
 
-# O estado global ULTIMO_SINAL será armazenado de forma protegida
 ULTIMO_SINAL = {
     'horario': get_horario_brasilia().strftime('%H:%M:%S'),
     'ativo': 'N/A',
     'sinal': 'NEUTRO 🟡',
-    'score': 0,
+    'assertividade': 0.0,
     'preco_entrada': 0.0
 }
 
-ULTIMO_SINAL_REGISTRADO = {
-    'horario': 'N/A',
-    'sinal_tipo': 'N/A'
-}
-
+ULTIMO_SINAL_REGISTRADO = {'horario': 'N/A', 'sinal_tipo': 'N/A'}
 HISTORICO_SINAIS = []
 ULTIMO_SINAL_CHECAR = None
+
+# ====================== CÁLCULO DE INDICADORES (Manual, sem numpy) ======================
+
+def calculate_rsi(velas, period=PERIOD_RSI):
+    """Calcula o RSI de 14 períodos."""
+    if len(velas) < period:
+        return 50.0 # Neutro
+    
+    # Preços de fechamento
+    closes = [v[1] for v in velas]
+    
+    gains = []
+    losses = []
+    
+    # Diferença entre os fechamentos (Change)
+    changes = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+
+    # Acúmulo dos 14 primeiros para a média inicial
+    initial_gains = [c for c in changes[0:period] if c > 0]
+    initial_losses = [abs(c) for c in changes[0:period] if c < 0]
+
+    avg_gain = sum(initial_gains) / period if initial_gains else 0
+    avg_loss = sum(initial_losses) / period if initial_losses else 0
+
+    if avg_loss == 0:
+        return 100.0 # Força total de alta (preço de fechamento da última vela)
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calculate_bollinger_bands(velas, period=PERIOD_BB, std_dev=STD_DEV_BB):
+    """Calcula Bandas de Bollinger (SMA, StdDev, Upper/Lower Band)."""
+    if len(velas) < period:
+        # Retorna bandas em torno do último preço
+        last_close = velas[-1][1] if velas else 0.0
+        return {'upper': last_close * 1.001, 'mid': last_close, 'lower': last_close * 0.999} 
+
+    closes = [v[1] for v in velas[-period:]]
+    
+    # 1. Média Móvel Simples (SMA) - Banda do Meio
+    sma = sum(closes) / period
+    
+    # 2. Desvio Padrão
+    variance = sum([(c - sma) ** 2 for c in closes]) / period
+    std_dev_val = variance ** 0.5
+    
+    # 3. Bandas
+    upper_band = sma + (std_dev_val * std_dev)
+    lower_band = sma - (std_dev_val * std_dev)
+    
+    return {'upper': upper_band, 'mid': sma, 'lower': lower_band}
 
 # ====================== FUNÇÕES BASE E DE DADOS ======================
 
@@ -66,7 +114,6 @@ def calcular_assertividade():
         if not HISTORICO_SINAIS:
             return {'total': 0, 'wins': 0, 'losses': 0, 'percentual': 'N/A'}
 
-        # Conta WINS e LOSSES, incluindo (TP) e (SL)
         wins = sum(1 for item in HISTORICO_SINAIS if 'WIN' in item['resultado'])
         total = len(HISTORICO_SINAIS)
         losses = total - wins
@@ -78,7 +125,8 @@ def get_velas_kucoin(ativo, intervalo):
        Retorna no formato padronizado: [Open, Close, High, Low]
     """
     try:
-        params = {'symbol': ativo, 'type': intervalo}
+        # Não usa mais o INTERVALO_M5, então o limite é sempre NUM_VELAS_ANALISE_M1
+        params = {'symbol': ativo, 'type': intervalo, 'limit': NUM_VELAS_ANALISE_M1} 
         r = requests.get(API_BASE_URL, params=params, timeout=8)
         r.raise_for_status()
         data = r.json().get('data', [])
@@ -90,113 +138,57 @@ def get_velas_kucoin(ativo, intervalo):
             # Indices KuCoin: v[1]=open, v[2]=close, v[3]=high, v[4]=low
             velas.append([float(v[1]), float(v[2]), float(v[3]), float(v[4])])
         
-        if intervalo == INTERVALO_M1:
-            return velas[-(NUM_VELAS_ANALISE + 1):]
-        elif intervalo == INTERVALO_M5:
-            return velas[-2:] # Última fechada e a atual
-            
+        return velas
+
     except Exception as e:
         print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⚠️ Erro ao obter velas {intervalo} de {ativo}: {e}")
         return []
     return []
 
-def get_tendencia_m5(ativo):
-    """Determina a tendência com base no fechamento da última vela M5."""
-    velas_m5 = get_velas_kucoin(ativo, INTERVALO_M5)
-    
-    if len(velas_m5) < 2:
-        return 'NEUTRO' 
-
-    # A vela que acabou de fechar (fechou no final do ciclo M5)
-    # Formato: [Open, Close, High, Low]
-    o_m5, c_m5 = velas_m5[-2][0], velas_m5[-2][1]
-    
-    if c_m5 > o_m5:
-        return 'UP' 
-    elif c_m5 < o_m5:
-        return 'DOWN' 
-    else:
-        return 'NEUTRO' 
-
-def analisar_price_action(velas_m1):
-    """Gera o sinal M1 baseado na força das últimas velas M1."""
-    if len(velas_m1) < 2:
-        return {'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
-    
-    # Formato interno: [Open, Close, High, Low]
-    o1, c1 = velas_m1[-1][0], velas_m1[-1][1]
-    o2, c2 = velas_m1[-2][0], velas_m1[-2][1]
-
-    score = 0
-    # Regra: Se vela atual (c1 > o1) é verde (+1), se vermelha (-1)
-    if c1 > o1: score += 1
-    elif c1 < o1: score -= 1
-    # Regra: Se vela anterior (c2 > o2) é verde (+1), se vermelha (-1)
-    if c2 > o2: score += 1
-    elif c2 < o2: score -= 1
-
-    if score >= SCORE_MINIMO_SINAL:
-        sinal_emoji = 'COMPRA FORTE 🚀'
-    elif score <= -SCORE_MINIMO_SINAL:
-        sinal_emoji = 'VENDA FORTE 📉'
-    elif score > 0:
-        sinal_emoji = 'COMPRA Fraca 🟢'
-    elif score < 0:
-        sinal_emoji = 'VENDA Fraca 🔴'
-    else:
-        sinal_emoji = 'NEUTRO 🟡'
-
-    return {'sinal': sinal_emoji, 'score': score, 'preco_entrada': c1}
+# A função get_tendencia_m5 foi removida.
 
 def checar_resultado_sinal(sinal_checar):
-    """
-    Novo: Simula o resultado considerando SL/TP de 0.05% com base nos High/Low da vela de expiração.
-    """
+    """Simula o resultado considerando SL/TP de 0.05% com base nos High/Low da vela de expiração."""
     global HISTORICO_SINAIS
     try:
         ativo = sinal_checar['ativo']
         preco_entrada = sinal_checar['preco_entrada']
         direcao_sinal = sinal_checar['sinal']
-        if ativo == 'N/A' or 'NEUTRO' in direcao_sinal or 'Filtrado' in direcao_sinal:
+        if ativo == 'N/A' or 'NEUTRO' in direcao_sinal or sinal_checar['assertividade'] < ASSERTIVIDADE_MINIMA:
             return
         
+        # Pega a vela que serviu de expiração (a última vela fechada)
         velas_exp = get_velas_kucoin(ativo, INTERVALO_M1)
         if len(velas_exp) < 1:
-            print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⚠️ Sem dados para checar resultado de {ativo}.")
             return
         
         # Dados da Vela de Expiração: [Open, Close, High, Low]
+        # A última vela é a que fecha 1 min após o sinal
         o_exp, c_exp, h_exp, l_exp = velas_exp[-1] 
         resultado = 'NEUTRO'
         
         percentual_sl_tp = PERCENTUAL_SL_TP
 
         # ====================== Lógica de Checagem SL/TP ======================
-        if 'COMPRA' in direcao_sinal: # Tenta atingir o TP (acima)
+        if 'COMPRA' in direcao_sinal: 
             tp_price = preco_entrada * (1 + percentual_sl_tp)
             sl_price = preco_entrada * (1 - percentual_sl_tp)
             
-            # Prioridade 1: O TP foi atingido? (High da vela de expiração)
             if h_exp >= tp_price:
                 resultado = 'WIN ✅ (TP)'
-            # Prioridade 2: O SL foi atingido? (Low da vela de expiração)
             elif l_exp <= sl_price:
                 resultado = 'LOSS ❌ (SL)'
-            # Prioridade 3: Determinação pelo Fechamento (Se o SL/TP não foi atingido)
             else:
                 resultado = 'WIN ✅ (Close)' if c_exp > preco_entrada else 'LOSS ❌ (Close)'
                 
-        elif 'VENDA' in direcao_sinal: # Tenta atingir o TP (abaixo)
+        elif 'VENDA' in direcao_sinal: 
             tp_price = preco_entrada * (1 - percentual_sl_tp)
             sl_price = preco_entrada * (1 + percentual_sl_tp)
 
-            # Prioridade 1: O TP foi atingido? (Low da vela de expiração)
             if l_exp <= tp_price:
                 resultado = 'WIN ✅ (TP)'
-            # Prioridade 2: O SL foi atingido? (High da vela de expiração)
             elif h_exp >= sl_price:
                 resultado = 'LOSS ❌ (SL)'
-            # Prioridade 3: Determinação pelo Fechamento
             else:
                 resultado = 'WIN ✅ (Close)' if c_exp < preco_entrada else 'LOSS ❌ (Close)'
         # ======================================================================
@@ -206,6 +198,7 @@ def checar_resultado_sinal(sinal_checar):
                 'horario': sinal_checar['horario'],
                 'ativo': ativo,
                 'sinal': direcao_sinal,
+                'assertividade': sinal_checar['assertividade'],
                 'resultado': resultado,
                 'preco_entrada': preco_entrada,
                 'preco_expiracao': c_exp
@@ -226,16 +219,101 @@ def formatar_historico_html(historico):
         diferenca = item['preco_expiracao'] - item['preco_entrada']
         sinal_diff = "+" if diferenca >= 0 else ""
         
-        # Adiciona os detalhes do SL/TP ao histórico
         resultado_formatado = item['resultado'].replace(' (Close)', '')
 
         linha = (
             f"[{item['horario']}] {item['ativo']} -> "
             f"<span class='{classe}'>{resultado_formatado}</span> "
-            f"(Sinal: {item['sinal']}. Fechamento Diff: {sinal_diff}{diferenca:.5f})"
+            f"(Assertividade: {item['assertividade']:.0f}%. Fechamento Diff: {sinal_diff}{diferenca:.5f})"
         )
         linhas_html.append(linha)
     return '\n'.join(linhas_html)
+
+# ====================== ESTRATÉGIA CENTRAL DE ASSERTIVIDADE (3 REGRAS) ======================
+
+def calcular_assertividade_confluencia(ativo, velas_m1):
+    """
+    Calcula a Assertividade (Confluência) para COMPRA e VENDA.
+    Assertividade = 100% se 3/3 regras forem convergentes.
+    """
+    if len(velas_m1) < NUM_VELAS_ANALISE_M1:
+        return {'sinal': 'NEUTRO 🟡', 'assertividade': 0.0, 'preco_entrada': 0.0}
+
+    # A vela que está fechando é a última do array
+    preco_entrada = velas_m1[-1][1] 
+    
+    # Preço High/Low da vela que está fechando (para Bollinger)
+    h_atual = velas_m1[-1][2]
+    l_atual = velas_m1[-1][3]
+    
+    # ------------------ INDICADORES ------------------
+    rsi_val = calculate_rsi(velas_m1)
+    bb_bands = calculate_bollinger_bands(velas_m1)
+    
+    # ------------------ CHECAGEM DE REGRA (Momentum M1) ------------------
+    
+    # 1. Momentum M1: Pelo menos 2 velas anteriores na mesma direção
+    o1, c1 = velas_m1[-1][0], velas_m1[-1][1] # Atual
+    o2, c2 = velas_m1[-2][0], velas_m1[-2][1] # Penúltima
+
+    # Determina o bias (viés de momentum)
+    momentum_buy = (c1 > o1) and (c2 > o2)
+    momentum_sell = (c1 < o1) and (c2 < o2)
+
+    # Função interna para calcular a assertividade para uma direção específica
+    def check_direction_confluence(direcao, has_momentum):
+        passed_rules = 0
+        
+        # REGRA 1: Momentum M1 (33.33%) - Condição inicial para considerar a entrada
+        if has_momentum:
+            passed_rules += 1
+        else:
+            return 0.0 # Sem momentum, assertividade zero.
+
+        # REGRA 2: Bandas de Bollinger (33.33%)
+        # COMPRA: Tocou ou está próximo da banda inferior (Sinal de reversão altista)
+        if direcao == 'COMPRA' and l_atual <= bb_bands['lower']:
+            passed_rules += 1
+        # VENDA: Tocou ou está próximo da banda superior (Sinal de reversão baixista)
+        elif direcao == 'VENDA' and h_atual >= bb_bands['upper']:
+            passed_rules += 1
+            
+        # REGRA 3: RSI (33.33%) - Sobrevendido/Sobrecomprado
+        # COMPRA: Sobrevendido
+        if direcao == 'COMPRA' and rsi_val <= RSI_OVERSOLD:
+            passed_rules += 1
+        # VENDA: Sobrecomprado
+        elif direcao == 'VENDA' and rsi_val >= RSI_OVERBOUGHT:
+            passed_rules += 1
+            
+        # Assertividade é a porcentagem de regras passadas (máximo de 3 regras)
+        return (passed_rules / 3.0) * 100.0
+
+    # ------------------ ANÁLISE CRUZADA E FILTRO ------------------
+    assert_buy = check_direction_confluence('COMPRA', momentum_buy)
+    assert_sell = check_direction_confluence('VENDA', momentum_sell)
+    
+    final_sinal = 'NEUTRO 🟡'
+    final_assertividade = 0.0
+    
+    # Prioriza o sinal com maior assertividade, mas exige o mínimo de 100%
+    if assert_buy >= ASSERTIVIDADE_MINIMA and assert_buy >= assert_sell:
+        final_sinal = 'COMPRA FORTE 🚀'
+        final_assertividade = assert_buy
+    elif assert_sell >= ASSERTIVIDADE_MINIMA and assert_sell >= assert_buy:
+        final_sinal = 'VENDA FORTE 📉'
+        final_assertividade = assert_sell
+    else:
+        final_assertividade = max(assert_buy, assert_sell)
+        if final_assertividade < ASSERTIVIDADE_MINIMA and final_assertividade > 0:
+            # Entrada bloqueada, mas registra a assertividade máxima encontrada
+            final_sinal = 'NEUTRO (Assertividade Insuficiente)' 
+        else:
+            final_sinal = 'NEUTRO 🟡'
+
+
+    return {'sinal': final_sinal, 'assertividade': final_assertividade, 'preco_entrada': preco_entrada}
+
 
 # ====================== CICLO DE ANÁLISE (BACKGROUND) ======================
 def ciclo_analise():
@@ -249,7 +327,6 @@ def ciclo_analise():
             seconds_until_next_minute = 60 - now_dt.second
             sleep_time = seconds_until_next_minute if seconds_until_next_minute != 60 else 60
             
-            # Checa o resultado do sinal anterior
             if ULTIMO_SINAL_CHECAR:
                 checar_resultado_sinal(ULTIMO_SINAL_CHECAR)
                 with state_lock:
@@ -259,36 +336,28 @@ def ciclo_analise():
             horario_atual_str = now_dt.strftime('%H:%M:%S')
 
             print(f"[{horario_atual_str}] Iniciando novo ciclo de análise...")
-            melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
+            
+            melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'assertividade': 0.0, 'preco_entrada': 0.0}
 
             for ativo in ATIVOS_MONITORADOS:
                 velas_m1 = get_velas_kucoin(ativo, INTERVALO_M1)
-                analise_m1 = analisar_price_action(velas_m1)
+                analise_confluencia = calcular_assertividade_confluencia(ativo, velas_m1)
                 
-                # --- FILTRO M5 ---
-                if 'FORTE' in analise_m1['sinal']:
-                    tendencia_m5 = get_tendencia_m5(ativo)
-                    
-                    if tendencia_m5 == 'UP' and 'VENDA' in analise_m1['sinal']:
-                        analise_m1['sinal'] = 'NEUTRO (Filtrado M5)'
-                    
-                    elif tendencia_m5 == 'DOWN' and 'COMPRA' in analise_m1['sinal']:
-                        analise_m1['sinal'] = 'NEUTRO (Filtrado M5)'
-                # --- FIM FILTRO M5 ---
-
-                if abs(analise_m1['score']) >= abs(melhor['score']):
-                    melhor = {'ativo': ativo, **analise_m1}
+                # Encontra o ativo com a maior assertividade (mesmo que não seja 100%)
+                if analise_confluencia['assertividade'] >= melhor['assertividade']:
+                    melhor = {'ativo': ativo, **analise_confluencia}
 
             sinal_final = {
                 'horario': horario_atual_str,
                 'ativo': melhor['ativo'],
                 'sinal': melhor['sinal'],
-                'score': melhor['score'],
+                'assertividade': melhor['assertividade'],
                 'preco_entrada': melhor['preco_entrada']
             }
             
             with state_lock:
-                if abs(sinal_final['score']) >= SCORE_MINIMO_SINAL and 'Filtrado' not in sinal_final['sinal']:
+                # Se encontrou um sinal com a assertividade mínima
+                if sinal_final['assertividade'] >= ASSERTIVIDADE_MINIMA:
                     ULTIMO_SINAL_CHECAR = copy.deepcopy(sinal_final)
                     ULTIMO_SINAL_REGISTRADO.update({
                         'horario': sinal_final['horario'],
@@ -297,7 +366,7 @@ def ciclo_analise():
 
                 ULTIMO_SINAL.update(sinal_final)
 
-            print(f"[{horario_atual_str}] 📢 Novo Sinal: {ULTIMO_SINAL['ativo']} - {ULTIMO_SINAL['sinal']} (Score: {ULTIMO_SINAL['score']})")
+            print(f"[{horario_atual_str}] 📢 Novo Sinal: {ULTIMO_SINAL['ativo']} - {ULTIMO_SINAL['sinal']} (Assertividade: {ULTIMO_SINAL['assertividade']:.0f}%)")
 
         except Exception:
             print("Erro no ciclo_analise:")
@@ -324,38 +393,40 @@ def render_dashboard_content():
         sinal_cor_borda = 'var(--neutro-borda)'
         sinal_classe_animacao = ''
         
-        is_sinal_forte = 'FORTE' in ULTIMO_SINAL['sinal'] and 'Filtrado' not in ULTIMO_SINAL['sinal']
+        is_sinal_forte = ULTIMO_SINAL['assertividade'] >= ASSERTIVIDADE_MINIMA
 
         if 'COMPRA FORTE' in ULTIMO_SINAL['sinal'] and is_sinal_forte:
             sinal_cor_fundo = 'var(--compra-fundo)' 
             sinal_cor_borda = 'var(--compra-borda)' 
             sinal_classe_animacao = 'signal-active'
             explicacao = (
-                f"Entrada de <strong>COMPRA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
-                f"<br><strong>Filtro M5: Confirmado.</strong> A tendência macro está de alta."
-                f"<br><strong>Simulação SL/TP:</strong> Margem de {PERCENTUAL_SL_TP * 100:.2f}% (SL/TP) aplicada na checagem."
+                f"Entrada de <strong>COMPRA FORTE</strong> em <strong>{ULTIMO_SINAL['ativo']}</strong>."
+                f"<br><strong>Assertividade: {ULTIMO_SINAL['assertividade']:.0f}% (Confluência MÁXIMA).</strong>"
+                f"<br>Regras ativadas: Momentum Altista + BB Inferior Tocado + RSI Sobrevendido."
             )
         elif 'VENDA FORTE' in ULTIMO_SINAL['sinal'] and is_sinal_forte:
             sinal_cor_fundo = 'var(--venda-fundo)' 
             sinal_cor_borda = 'var(--venda-borda)' 
             sinal_classe_animacao = 'signal-active'
             explicacao = (
-                f"Entrada de <strong>VENDA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
-                f"<br><strong>Filtro M5: Confirmado.</strong> A tendência macro está de baixa."
-                f"<br><strong>Simulação SL/TP:</strong> Margem de {PERCENTUAL_SL_TP * 100:.2f}% (SL/TP) aplicada na checagem."
+                f"Entrada de <strong>VENDA FORTE</strong> em <strong>{ULTIMO_SINAL['ativo']}</strong>."
+                f"<br><strong>Assertividade: {ULTIMO_SINAL['assertividade']:.0f}% (Confluência MÁXIMA).</strong>"
+                f"<br>Regras ativadas: Momentum Baixista + BB Superior Tocado + RSI Sobrecomprado."
             )
         else:
-            if 'Filtrado' in ULTIMO_SINAL['sinal']:
+            if ULTIMO_SINAL['assertividade'] > 0 and ULTIMO_SINAL['assertividade'] < ASSERTIVIDADE_MINIMA:
                  explicacao = (
-                    f"Sinal de {ULTIMO_SINAL['sinal']} detectado em <strong>{ULTIMO_SINAL['ativo']}</strong>, mas foi **REJEITADO** pelo Filtro M5."
-                    "<br>Regra: O sinal M1 estava contra a tendência dominante do M5."
+                    f"Entrada em <strong>{ULTIMO_SINAL['ativo']}</strong> bloqueada."
+                    f"<br>Assertividade encontrada: <strong>{ULTIMO_SINAL['assertividade']:.0f}%</strong>."
+                    f"<br><strong>Entrada não aprovada devido à assertividade insuficiente (<{ASSERTIVIDADE_MINIMA:.0f}%).</strong>"
                 )
+                 sinal_exibicao = 'ENTRADA BLOQUEADA'
             else:
                 explicacao = (
-                    "No momento, o robô está em <strong>NEUTRO</strong>. Nenhuma moeda atingiu score mínimo."
-                    f"<br>A checagem de resultados agora simula <strong>SL/TP de {PERCENTUAL_SL_TP * 100:.2f}%</strong>."
+                    "No momento, o robô está em <strong>NEUTRO</strong>. Nenhuma confluência foi encontrada."
+                    f"<br>O robô exige <strong>{ASSERTIVIDADE_MINIMA:.0f}% de Assertividade</strong> (todas as 3 regras ativadas) para operar."
                 )
-            sinal_exibicao = 'SEM SINAL DE ENTRADA'
+                sinal_exibicao = 'SEM SINAL DE ENTRADA'
             sinal_cor_fundo = 'var(--neutro-fundo)'
             sinal_cor_borda = 'var(--neutro-borda)'
             
@@ -366,22 +437,23 @@ def render_dashboard_content():
 
         if ultimo_sinal_tipo == 'COMPRA':
             ultimo_sinal_cor_css = 'var(--compra-borda)'
-            ultimo_sinal_texto = f'✅ Última Entrada: COMPRA (Horário: {ultimo_sinal_hora})'
+            ultimo_sinal_texto = f'✅ Última Entrada Registrada: COMPRA (Horário: {ultimo_sinal_hora})'
         elif ultimo_sinal_tipo == 'VENDA':
             ultimo_sinal_cor_css = 'var(--venda-borda)'
-            ultimo_sinal_texto = f'❌ Última Entrada: VENDA (Horário: {ultimo_sinal_hora})'
+            ultimo_sinal_texto = f'❌ Última Entrada Registrada: VENDA (Horário: {ultimo_sinal_hora})'
         else:
             ultimo_sinal_cor_css = 'var(--neutro-borda)'
-            ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada (Pós-Filtro)'
+            ultimo_sinal_texto = '🟡 Nenhuma Entrada Registrada (Aguardando 100% de Assertividade)'
 
         # Prepara detalhes do sinal e histórico
-        if ULTIMO_SINAL['score'] != 0 or 'Filtrado' in ULTIMO_SINAL['sinal']:
+        if ULTIMO_SINAL['assertividade'] > 0:
             signal_details_html = f"""
-                <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
+                <div class="data-item">Horário da Análise: <strong>{horario_exibicao}</strong></div>
                 <div class="data-item">Preço de Entrada: <strong>{ULTIMO_SINAL['preco_entrada']:.5f}</strong></div>
-                <div class="data-item">Força (Score M1): <strong>{ULTIMO_SINAL['score']}</strong></div>
             """
-            analise_detail_html = ""
+            analise_detail_html = f"""
+                <div class="assertividade-score">ASSERTIVIDADE: <span style="font-size:1.5em; font-weight:700;">{ULTIMO_SINAL['assertividade']:.0f}%</span></div>
+            """
         else:
             signal_details_html = ""
             analise_detail_html = f"""
@@ -411,80 +483,3 @@ def render_dashboard_content():
         data_payload = {
             'time': horario_atual_brasilia,
             'ultimoSinalTexto': ultimo_sinal_texto,
-            'sinalExibicao': sinal_exibicao,
-            'ativo': ULTIMO_SINAL['ativo'],
-            'signalDetails': signal_details_html,
-            'analiseDetail': analise_detail_html,
-            'assertPercentual': assertividade_data['percentual'],
-            'assertWins': assertividade_data['wins'],
-            'assertTotal': assertividade_data['total'],
-            'historicoHtml': historico_html or 'Nenhum registro ainda.',
-            'explicacaoHtml': explicacao,
-            'sinalClasseAnimacao': sinal_classe_animacao,
-            'isSinalForte': is_sinal_forte, 
-            'dynamicCss': dynamic_style_css
-        }
-        return data_payload
-
-# ====================== ROTA DE STREAM SSE (MELHORIA UX) ======================
-@app.route('/stream')
-def stream():
-    def event_stream():
-        while True:
-            try:
-                data = render_dashboard_content()
-                yield f"data: {json.dumps(data)}\n\n"
-                time.sleep(DASHBOARD_REFRESH_RATE_SECONDS)
-            except Exception:
-                print("Erro no stream SSE:")
-                traceback.print_exc()
-                time.sleep(5)
-
-    return Response(
-        event_stream(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
-    )
-
-# ====================== ROTA DA DASHBOARD (HTML Estático + JS do SSE) ======================
-@app.route('/')
-def home():
-    css_content = '''
-    /* Paleta de Cores e Estilos */
-    :root {
-        --bg-primary: #1C2331;
-        --bg-secondary: #2A3346;
-        --text-primary: #DCE3F4;
-        --accent-blue: #70A0FF;
-        --neutro-fundo: #374257;
-        --neutro-borda: #4D5970;
-        --compra-fundo: #2D4C42; /* Verde Trade Escuro */
-        --compra-borda: #6AA84F; /* Verde Trade */
-        --venda-fundo: #5C3A3A; /* Vermelho Trade Escuro */
-        --venda-borda: #E06666; /* Vermelho Trade */
-        --assert-fundo: #3B3F50;
-        --assert-borda: #FFC107;
-    }
-
-    body {
-        background-color: var(--bg-primary);
-        color: var(--text-primary);
-        font-family: 'Poppins', sans-serif;
-        padding: 10px;
-    }
-    .container {
-        max-width: 950px;
-        margin: 20px auto;
-        background-color: var(--bg-secondary);
-        padding: 20px;
-        border-radius: 20px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    }
-    h1 { color: var(--accent-blue); border-bottom: 1px solid var(--neutro-borda); padding-bottom: 15px; margin-bottom: 25px; text-align: center; font-weight: 600; font-size: 1.8em; }
-    .time-box { background-color: #3B3F50; padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); }
-    .current-time { font-size: 2.0em; font-weight: 700; color: #FFFFFF; line-height: 1.1; }
-    .last-signal-box { 
-        background-color: #3B3F50; border: 1px solid #4D5970; border-left: 5px solid var(--neutro-borda); 
-        padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 1.0em; font-weight: 500; 
-        color: var(--text-primary); text-align: center; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); 
-        tra
