@@ -1,14 +1,14 @@
-# main_v3_fluid.py
-# ROBÔ TRADER M1 (FLUIDO) - VERSÃO PARALELIZADA ESTRATÉGIA MIN. 80%
-# Usa ThreadPoolExecutor para requisições de API simultâneas, tornando o ciclo de análise mais rápido (fluido).
+# main_v4_dashboard.py
+# ROBÔ TRADER M1 (FLUIDO) - ESTRATÉGIA RSI/BB/MOMENTUM
+# Combina a paralelização de I/O da v3 com um Dashboard esteticamente aprimorado (similar ao seu pedido).
 
 from flask import Flask, Response
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from threading import Thread, Lock
-from concurrent.futures import ThreadPoolExecutor # NOVO: Módulo para paralelização
+from concurrent.futures import ThreadPoolExecutor
 import os
 import copy
 import traceback
@@ -16,15 +16,14 @@ import json
 
 # ====================== CONFIGURAÇÕES ======================
 TIMEZONE_BR = 'America/Sao_Paulo'
-# Adicionado mais ativos para demonstrar o ganho de velocidade (fluid) da paralelização
-ATIVOS_MONITORADOS = ['BTC-USDT', 'ETH-USDT', 'EUR-USDT', 'DOT-USDT', 'ADA-USDT', 'XRP-USDT'] 
+ATIVOS_MONITORADOS = ['BTC-USDT', 'ETH-USDT', 'EUR-USDT', 'DOT-USDT', 'ADA-USDT'] 
 API_BASE_URL = 'https://api.kucoin.com/api/v1/market/candles'
 INTERVALO_M1 = '1min'
 NUM_VELAS_ANALISE_M1 = 30 
 MAX_WORKERS = 5 # Número máximo de requisições de API simultâneas
 
-# Para atingir o mínimo de 80% com 3 regras (33.33% cada), a confluência deve ser de 100%.
-ASSERTIVIDADE_MINIMA = 80.0 
+# Configurações da Estratégia de Confluência
+ASSERTIVIDADE_MINIMA = 80.0  # Requer 100% de confluência (3/3 regras)
 MAX_HISTORICO = 10
 PERCENTUAL_SL_TP = 0.0005 
 
@@ -60,7 +59,7 @@ ULTIMO_SINAL_REGISTRADO = {'horario': 'N/A', 'sinal_tipo': 'N/A'}
 HISTORICO_SINAIS = []
 ULTIMO_SINAL_CHECAR = None
 
-# ====================== CÁLCULO DE INDICADORES (Manual, sem numpy) ======================
+# ====================== CÁLCULO DE INDICADORES (Manual) ======================
 
 def calculate_rsi(velas, period=PERIOD_RSI):
     """Calcula o RSI de 14 períodos."""
@@ -110,10 +109,10 @@ def calcular_assertividade_historico():
         percentual = f"{(wins / total) * 100:.2f}%" if total else 'N/A'
         return {'total': total, 'wins': wins, 'losses': losses, 'percentual': percentual}
 
-def get_velas_kucoin(ativo, intervalo):
+def get_velas_kucoin(ativo, intervalo, limit=NUM_VELAS_ANALISE_M1):
     """Busca as velas da KuCoin para um dado ativo e intervalo."""
     try:
-        params = {'symbol': ativo, 'type': intervalo, 'limit': NUM_VELAS_ANALISE_M1} 
+        params = {'symbol': ativo, 'type': intervalo, 'limit': limit} 
         r = requests.get(API_BASE_URL, params=params, timeout=8)
         r.raise_for_status()
         data = r.json().get('data', [])
@@ -131,7 +130,7 @@ def get_velas_kucoin(ativo, intervalo):
     return []
 
 def checar_resultado_sinal(sinal_checar):
-    """Simula o resultado considerando SL/TP de 0.05%."""
+    """Simula o resultado considerando SL/TP de 0.05% na vela de expiração."""
     global HISTORICO_SINAIS
     try:
         ativo = sinal_checar['ativo']
@@ -141,7 +140,8 @@ def checar_resultado_sinal(sinal_checar):
         if ativo == 'N/A' or 'NEUTRO' in direcao_sinal or sinal_checar['assertividade'] < ASSERTIVIDADE_MINIMA:
             return
         
-        velas_exp = get_velas_kucoin(ativo, INTERVALO_M1)
+        # Limit=1 para pegar apenas a vela de expiração (o minuto seguinte)
+        velas_exp = get_velas_kucoin(ativo, INTERVALO_M1, limit=1)
         if len(velas_exp) < 1:
             return
         
@@ -149,6 +149,7 @@ def checar_resultado_sinal(sinal_checar):
         resultado = 'NEUTRO'
         percentual_sl_tp = PERCENTUAL_SL_TP
 
+        # Checagem SL/TP
         if 'COMPRA' in direcao_sinal: 
             tp_price = preco_entrada * (1 + percentual_sl_tp)
             sl_price = preco_entrada * (1 - percentual_sl_tp)
@@ -185,6 +186,7 @@ def checar_resultado_sinal(sinal_checar):
 
 def formatar_historico_html(historico):
     linhas_html = []
+    # Itera de trás para frente para mostrar os mais novos primeiro
     for item in reversed(historico):
         classe = 'win' if 'WIN' in item['resultado'] else 'loss'
         diferenca = item['preco_expiracao'] - item['preco_entrada']
@@ -194,7 +196,7 @@ def formatar_historico_html(historico):
         linha = (
             f"[{item['horario']}] {item['ativo']} -> "
             f"<span class='{classe}'>{resultado_formatado}</span> "
-            f"(Assertividade: {item['assertividade']:.0f}%. Fechamento Diff: {sinal_diff}{diferenca:.5f})"
+            f"(Assertividade: {item['assertividade']:.0f}%. Diff: {sinal_diff}{diferenca:.5f})"
         )
         linhas_html.append(linha)
     return '\n'.join(linhas_html)
@@ -207,7 +209,6 @@ def analisar_ativo(ativo):
     if not velas_m1 or len(velas_m1) < NUM_VELAS_ANALISE_M1:
         return {'ativo': ativo, 'sinal': 'NEUTRO 🟡', 'assertividade': 0.0, 'preco_entrada': 0.0}
 
-    # A vela que está fechando é a última do array
     preco_entrada = velas_m1[-1][1] 
     o_atual, c_atual, h_atual, l_atual = velas_m1[-1]
     o2, c2 = velas_m1[-2][0], velas_m1[-2][1] # Penúltima vela
@@ -215,9 +216,9 @@ def analisar_ativo(ativo):
     rsi_val = calculate_rsi(velas_m1)
     bb_bands = calculate_bollinger_bands(velas_m1)
     
-    # REGRA 1: Momentum M1 (Proxy de S/R)
-    momentum_buy = (c_atual > o_atual) and (c2 > o2) # 2 velas fechando em alta
-    momentum_sell = (c_atual < o_atual) and (c2 < o2) # 2 velas fechando em baixa
+    # REGRA 1: Momentum M1 (2 velas fechando na mesma direção)
+    momentum_buy = (c_atual > o_atual) and (c2 > o2)
+    momentum_sell = (c_atual < o_atual) and (c2 < o2)
 
     def check_direction_confluence(direcao, has_momentum):
         passed_rules = 0
@@ -226,11 +227,11 @@ def analisar_ativo(ativo):
         if has_momentum: passed_rules += 1
         else: return 0.0
 
-        # Regra 2: Bandas de Bollinger (33.33%)
+        # Regra 2: Bandas de Bollinger (33.33%) - Tocou a banda de sobre-extensão
         if direcao == 'COMPRA' and l_atual <= bb_bands['lower']: passed_rules += 1
         elif direcao == 'VENDA' and h_atual >= bb_bands['upper']: passed_rules += 1
             
-        # Regra 3: RSI (33.33%)
+        # Regra 3: RSI (33.33%) - Sobrevenda/Sobrecompra
         if direcao == 'COMPRA' and rsi_val <= RSI_OVERSOLD: passed_rules += 1
         elif direcao == 'VENDA' and rsi_val >= RSI_OVERBOUGHT: passed_rules += 1
             
@@ -242,7 +243,7 @@ def analisar_ativo(ativo):
     final_sinal = 'NEUTRO 🟡'
     final_assertividade = 0.0
     
-    # Exige Assertividade Mínima de 80.0% (implica 100% de confluência)
+    # Exige Assertividade Mínima de 80.0% (Confluência Total = 100%)
     if assert_buy >= ASSERTIVIDADE_MINIMA and assert_buy >= assert_sell:
         final_sinal = 'COMPRA APROVADA ✅'
         final_assertividade = assert_buy
@@ -257,12 +258,11 @@ def analisar_ativo(ativo):
     return {'ativo': ativo, 'sinal': final_sinal, 'assertividade': final_assertividade, 'preco_entrada': preco_entrada}
 
 
-# ====================== CICLO DE ANÁLISE (BACKGROUND) - AGORA FLUIDO ======================
+# ====================== CICLO DE ANÁLISE (BACKGROUND) - FLUIDO ======================
 def ciclo_analise():
     global ULTIMO_SINAL, ULTIMO_SINAL_CHECAR, ULTIMO_SINAL_REGISTRADO
     time.sleep(1) 
     
-    # Cria o pool de threads para executar o I/O em paralelo
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while True:
             try:
@@ -286,12 +286,12 @@ def ciclo_analise():
 
                 print(f"[{horario_atual_str}] Iniciando novo ciclo de análise (PARALELO)...")
                 
-                # Mapeia a função 'analisar_ativo' para todos os ativos, executando-os simultaneamente
+                # Executa a análise para todos os ativos em paralelo
                 melhores_sinais = list(executor.map(analisar_ativo, ATIVOS_MONITORADOS))
 
                 melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'assertividade': 0.0, 'preco_entrada': 0.0}
 
-                # Coleta o melhor sinal de todos os resultados paralelos
+                # Coleta o melhor sinal
                 for sinal in melhores_sinais:
                     if sinal['assertividade'] >= melhor['assertividade']:
                         melhor = sinal
@@ -323,7 +323,6 @@ def ciclo_analise():
             except Exception:
                 print("Erro no ciclo_analise:")
                 traceback.print_exc()
-                # Em caso de erro, espera um pouco e tenta o próximo ciclo
                 time.sleep(5) 
 
 # Inicia a thread de análise em segundo plano
@@ -332,8 +331,7 @@ analysis_thread.start()
 
 # ====================== GERAÇÃO DINÂMICA DO CONTEÚDO (Para SSE) ======================
 def render_dashboard_content():
-    # Lógica de renderização idêntica à versão anterior (main_v2.py)
-    # Garante que o frontend exibe o sinal no formato correto
+    """Gera o payload de dados para o dashboard via Server-Sent Events (SSE)."""
     with state_lock:
         assertividade_data = calcular_assertividade_historico()
         horario_atual_brasilia = get_horario_brasilia().strftime('%H:%M:%S')
@@ -348,7 +346,7 @@ def render_dashboard_content():
         
         is_sinal_aprovado = ULTIMO_SINAL['assertividade'] >= ASSERTIVIDADE_MINIMA
         
-        # --- Lógica de Geração da Explicação Resumida (Formato Solicitado) ---
+        # --- Lógica de Geração da Explicação Resumida ---
         if 'COMPRA APROVADA' in ULTIMO_SINAL['sinal'] and is_sinal_aprovado:
             sinal_cor_fundo = 'var(--compra-fundo)' 
             sinal_cor_borda = 'var(--compra-borda)' 
@@ -356,8 +354,8 @@ def render_dashboard_content():
             
             explicacao_resumida = (
                 f"Ação: **COMPRA** (Entrada aprovada: Sim)\n"
-                f"Horário de entrada sugerido: {datetime.now(pytz.timezone(TIMEZONE_BR)).strftime('%H:%M')} + 1 min\n"
-                f"Explicação resumida: Momentum de reversão altista confirmado. Preço tocou a banda inferior de BB, indicando sobre-extensão. RSI encontra-se em zona de sobrevenda (<{RSI_OVERSOLD:.0f})."
+                f"Horário de entrada sugerido: {get_horario_brasilia().strftime('%H:%M')} + 1 min\n"
+                f"Explicação resumida: Momentum Altista confirmado (R1). Preço sobre-estendido na BB inferior (R2). RSI em zona de sobrevenda (<{RSI_OVERSOLD:.0f}) (R3)."
             )
             explicacao_dashboard = (
                 f"Entrada de **COMPRA** aprovada em **{ULTIMO_SINAL['ativo']}**."
@@ -372,8 +370,8 @@ def render_dashboard_content():
             
             explicacao_resumida = (
                 f"Ação: **VENDA** (Entrada aprovada: Sim)\n"
-                f"Horário de entrada sugerido: {datetime.now(pytz.timezone(TIMEZONE_BR)).strftime('%H:%M')} + 1 min\n"
-                f"Explicação resumida: Momentum de reversão baixista confirmado. Preço tocou a banda superior de BB, indicando sobre-extensão. RSI encontra-se em zona de sobrecompra (>{RSI_OVERBOUGHT:.0f})."
+                f"Horário de entrada sugerido: {get_horario_brasilia().strftime('%H:%M')} + 1 min\n"
+                f"Explicação resumida: Momentum Baixista confirmado (R1). Preço sobre-estendido na BB superior (R2). RSI em zona de sobrecompra (>{RSI_OVERBOUGHT:.0f}) (R3)."
             )
             explicacao_dashboard = (
                 f"Entrada de **VENDA** aprovada em **{ULTIMO_SINAL['ativo']}**."
@@ -385,7 +383,7 @@ def render_dashboard_content():
                  explicacao_resumida = (
                     f"Ação: **NEUTRO** (Entrada aprovada: Não)\n"
                     f"Horário de entrada sugerido: N/A\n"
-                    f"Explicação resumida: Entrada não aprovada devido à assertividade insuficiente. Assertividade encontrada: {ULTIMO_SINAL['assertividade']:.0f}%."
+                    f"Explicação resumida: Entrada bloqueada. Assertividade encontrada: {ULTIMO_SINAL['assertividade']:.0f}%. Precisa de {ASSERTIVIDADE_MINIMA:.0f}%."
                 )
                  explicacao_dashboard = (
                     f"Entrada em **{ULTIMO_SINAL['ativo']}** bloqueada."
@@ -415,27 +413,27 @@ def render_dashboard_content():
 
         if ultimo_sinal_tipo == 'COMPRA':
             ultimo_sinal_cor_css = 'var(--compra-borda)'
-            ultimo_sinal_texto = f'✅ Última Entrada Aprovada: COMPRA (Horário: {ultimo_sinal_hora})'
+            ultimo_sinal_texto = f'✅ Última Entrada Aprovada: COMPRA ({ULTIMO_SINAL["ativo"]} @ {ULTIMO_SINAL["preco_entrada"]:.5f})'
         elif ultimo_sinal_tipo == 'VENDA':
             ultimo_sinal_cor_css = 'var(--venda-borda)'
-            ultimo_sinal_texto = f'❌ Última Entrada Aprovada: VENDA (Horário: {ultimo_sinal_hora})'
+            ultimo_sinal_texto = f'❌ Última Entrada Aprovada: VENDA ({ULTIMO_SINAL["ativo"]} @ {ULTIMO_SINAL["preco_entrada"]:.5f})'
         else:
             ultimo_sinal_cor_css = 'var(--neutro-borda)'
             ultimo_sinal_texto = '🟡 Nenhuma Entrada Aprovada (Aguardando Confluência Total)'
 
-        # Prepara detalhes do sinal e histórico
+        # Prepara detalhes do sinal
         if ULTIMO_SINAL['assertividade'] > 0:
             signal_details_html = f"""
                 <div class="data-item">Preço de Entrada: <strong>{ULTIMO_SINAL['preco_entrada']:.5f}</strong></div>
             """
             analise_detail_html = f"""
                 <div class="data-item">Horário da Análise: <strong>{horario_exibicao}</strong></div>
-                <div class="assertividade-score">ASSERTIVIDADE: <span style="font-size:1.5em; font-weight:700;">{ULTIMO_SINAL['assertividade']:.0f}%</span></div>
+                <div class="assertividade-score">ASSERTIVIDADE DO SINAL: <span style="font-size:1.5em; font-weight:700;">{ULTIMO_SINAL['assertividade']:.0f}%</span></div>
             """
         else:
             signal_details_html = ""
             analise_detail_html = f"""
-                <div class="data-item">Horário da Análise: <strong>{horario_exibicao}</strong></div>
+                <div class="data-item">Horário da Última Análise: <strong>{horario_exibicao}</strong></div>
             """
 
         historico_html = formatar_historico_html(HISTORICO_SINAIS)
@@ -448,4 +446,14 @@ def render_dashboard_content():
                 border: 2px solid {sinal_cor_borda}; 
             }}
             .sinal-header {{ 
-                color: {sinal_cor_bor
+                color: {sinal_cor_borda};
+            }}
+            .signal-active {{ 
+                animation: pulse 1s infinite;
+                box-shadow: 0 0 20px {sinal_cor_borda};
+                transform: translateY(-2px);
+            }}
+        """
+
+        # Retorna um JSON com todos os dados para o JS atualizar o DOM
+        data_payl
