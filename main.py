@@ -1,6 +1,6 @@
 # ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM INTERFACE
 # CORREÇÃO: Corrigido o SyntaxError: unterminated triple-quoted f-string.
-# A lógica complexa de renderização do histórico foi movida para uma função separada para maior estabilidade.
+# A lógica de formatação do HTML foi simplificada para evitar conflitos de aspas e chaves.
 
 from flask import Flask, json
 import requests
@@ -219,7 +219,7 @@ def ciclo_analise():
         # Aguarda 60 segundos antes da próxima análise
         time.sleep(60)
 
-# ====================== FUNÇÃO AUXILIAR PARA HISTÓRICO DE SINAIS (NOVA) ======================
+# ====================== FUNÇÃO AUXILIAR PARA HISTÓRICO DE SINAIS ======================
 def formatar_historico_html(historico):
     """
     Formata o histórico de sinais em uma string HTML segura,
@@ -231,7 +231,7 @@ def formatar_historico_html(historico):
         # Determina a classe CSS com base no resultado
         classe = 'win' if 'WIN' in item['resultado'] else 'loss'
         
-        # Cria a linha formatada
+        # Cria a linha formatada. Usando aspas duplas fora, e simples dentro, é mais seguro.
         linha = (
             f"[{item['horario']}] {item['ativo']} -> "
             f"<span class='{classe}'>{item['resultado']}</span> "
@@ -239,7 +239,7 @@ def formatar_historico_html(historico):
         )
         linhas_html.append(linha)
         
-    return '<br>'.join(linhas_html) # Junta as linhas com quebras de linha HTML
+    return '<br>'.join(linhas_html)
 
 
 # ====================== SERVIDOR HTTPS (ENDPOINT) - INTERFACE COMPLETA + AVISO ======================
@@ -252,12 +252,12 @@ def home():
     # Horário atual de Brasília no momento da requisição (ATUALIZA A CADA 5 SEGUNDOS)
     horario_atual_brasilia = get_horario_brasilia().strftime('%H:%M:%S') 
 
-    # LÓGICA PARA MENSAGEM CLARA E EXIBIÇÃO
+    # ====================== LÓGICA PARA MENSAGEM CLARA E EXIBIÇÃO ======================
     sinal_exibicao = ULTIMO_SINAL['sinal']
     ativo_exibicao = f"em {ULTIMO_SINAL['ativo']}"
     horario_exibicao = ULTIMO_SINAL['horario']
 
-    # ====================== LÓGICA DA EXPLICAÇÃO ======================
+    # LÓGICA DA EXPLICAÇÃO
     explicacao = ""
     if 'COMPRA FORTE' in ULTIMO_SINAL['sinal']:
         explicacao = (
@@ -278,7 +278,7 @@ def home():
             "<br>Estratégia: Aguardando a formação de <strong>duas ou mais velas M1 consecutivas</strong> na mesma direção forte."
         )
 
-    # Cores de Fundo (Glassmorphism Suave)
+    # Cores de Fundo (Strings com nomes de variáveis CSS)
     sinal_cor_fundo = 'var(--neutro-fundo)'
     sinal_cor_borda = 'var(--neutro-borda)'
     sinal_classe_animacao = ''
@@ -313,18 +313,19 @@ def home():
 
     # Cores e texto para a Caixa de Último Sinal
     if ultimo_sinal_tipo == 'COMPRA':
-        ultimo_sinal_cor = 'var(--compra-borda)'
+        # Usando a variável CSS diretamente para evitar problemas de aspas
+        ultimo_sinal_cor_css = 'var(--compra-borda)' 
         ultimo_sinal_texto = f'✅ Última Entrada: COMPRA (Horário: {ultimo_sinal_hora})'
     elif ultimo_sinal_tipo == 'VENDA':
-        ultimo_sinal_cor = 'var(--venda-borda)'
+        # Usando a variável CSS diretamente para evitar problemas de aspas
+        ultimo_sinal_cor_css = 'var(--venda-borda)'
         ultimo_sinal_texto = f'❌ Última Entrada: VENDA (Horário: {ultimo_sinal_hora})'
     else:
-        ultimo_sinal_cor = 'var(--neutro-borda)'
+        ultimo_sinal_cor_css = 'var(--neutro-borda)'
         ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
         
-    # 1. Pré-calcula o HTML dos detalhes do sinal ativo (Corrigido da iteração anterior)
+    # 1. Pré-calcula o HTML dos detalhes do sinal ativo
     if ULTIMO_SINAL['score'] != 0:
-        # Se houver sinal forte, mostra detalhes do trade
         signal_details_html = f"""
             <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
             <div class="data-item">Preço de Entrada: <strong>{ULTIMO_SINAL['preco_entrada']:.5f}</strong></div>
@@ -332,16 +333,16 @@ def home():
         """
         analise_detail_html = ""
     else:
-        # Se NEUTRO, mostra apenas o horário da última análise
         signal_details_html = ""
         analise_detail_html = f"""
             <div class="data-item">Última Análise do Robô: <strong>{horario_exibicao}</strong></div>
         """
     
-    # 2. Pré-calcula o HTML do Histórico (NOVO: Correção de Syntax)
+    # 2. Pré-calcula o HTML do Histórico
     historico_html = formatar_historico_html(HISTORICO_SINAIS)
         
     # HTML com CSS e o elemento de Áudio
+    # ATENÇÃO: Os f-strings no CSS precisam usar chaves duplas {{ }} para que o Python não tente interpretá-las.
     html_content = f"""
     <!DOCTYPE
     html>
@@ -396,7 +397,7 @@ def home():
                 margin-bottom: 25px; 
                 text-align: center; 
                 font-weight: 600;
-                font-size: 1.8em; /* Ajuste para mobile */
+                font-size: 1.8em; 
             }}
 
             /* Box de Horário (Relógio) */
@@ -409,7 +410,7 @@ def home():
                 box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
             }}
             .current-time {{
-                font-size: 2.0em; /* Ajuste para mobile */
+                font-size: 2.0em; 
                 font-weight: 700;
                 color: #FFFFFF;
                 line-height: 1.1;
@@ -419,7 +420,8 @@ def home():
             .last-signal-box {{
                 background-color: #3B3F50;
                 border: 1px solid #4D5970;
-                border-left: 5px solid {ultimo_sinal_cor}; /* A cor aqui é o destaque visual */
+                /* Aqui usamos a variável Python diretamente no CSS via f-string */
+                border-left: 5px solid {ultimo_sinal_cor_css}; 
                 padding: 10px 15px;
                 border-radius: 8px;
                 margin-bottom: 20px;
@@ -431,16 +433,16 @@ def home():
             }}
 
 
-            /* Layout Principal (Flex no desktop, Stacked no mobile) */
+            /* Layout Principal */
             .main-content-grid {{ 
                 display: flex; 
                 gap: 15px; 
                 margin-bottom: 25px; 
-                flex-direction: column; /* Padrão Mobile: Coluna */
+                flex-direction: column; 
             }}
             @media (min-width: 768px) {{
                 .main-content-grid {{
-                    flex-direction: row; /* Desktop: Linha */
+                    flex-direction: row; 
                 }}
             }}
             .sinal-box, .assertividade-box {{ 
@@ -451,13 +453,13 @@ def home():
                 box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
             }}
 
-            /* Estilo da Caixa de Sinal */
+            /* Estilo da Caixa de Sinal - Uso de variáveis Python para cor */
             .sinal-box {{ 
                 background-color: {sinal_cor_fundo}; 
                 border: 2px solid {sinal_cor_borda}; 
             }}
             .sinal-header {{ 
-                font-size: 1.8em; /* Ajuste para mobile */
+                font-size: 1.8em; 
                 font-weight: 700; 
                 color: {sinal_cor_borda}; 
                 margin-bottom: 10px; 
@@ -504,5 +506,4 @@ def home():
 
             /* Caixa de Informação/Explicação */
             .info-box {{
-                margin-top: 25px;
-      
+         
