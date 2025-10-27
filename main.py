@@ -209,4 +209,49 @@ def checar_resultado_sinal(sinal_checar):
         percentual_sl_tp = PERCENTUAL_SL_TP
 
         if 'COMPRA' in direcao_sinal:
-            tp
+            tp_price = preco_entrada * (1 + percentual_sl_tp)
+            sl_price = preco_entrada * (1 - percentual_sl_tp)
+
+            if h_exp >= tp_price:
+                resultado = 'WIN ✅ (TP)'
+            elif l_exp <= sl_price:
+                resultado = 'LOSS ❌ (SL)'
+            elif c_exp > preco_entrada:
+                resultado = 'WIN (Close)'
+            elif c_exp < preco_entrada:
+                resultado = 'LOSS (Close)'
+            else:
+                resultado = 'NEUTRO'
+
+        elif 'VENDA' in direcao_sinal:
+            tp_price = preco_entrada * (1 - percentual_sl_tp)
+            sl_price = preco_entrada * (1 + percentual_sl_tp)
+
+            if l_exp <= tp_price:
+                resultado = 'WIN ✅ (TP)'
+            elif h_exp >= sl_price:
+                resultado = 'LOSS ❌ (SL)'
+            elif c_exp < preco_entrada:
+                resultado = 'WIN (Close)'
+            elif c_exp > preco_entrada:
+                resultado = 'LOSS (Close)'
+            else:
+                resultado = 'NEUTRO'
+
+        with state_lock:
+            HISTORICO_SINAIS.append({
+                'horario': sinal_checar['horario'],
+                'ativo': ativo,
+                'sinal': direcao_sinal,
+                'resultado': resultado,
+                'preco_entrada': preco_entrada,
+                'preco_expiracao': c_exp
+            })
+            if len(HISTORICO_SINAIS) > MAX_HISTORICO:
+                HISTORICO_SINAIS.pop(0)
+
+        print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] 🎯 Resultado de {ativo} ({sinal_checar['horario']}): {resultado}")
+
+    except Exception:
+        print("Erro em checar_resultado_sinal:")
+        traceback.print_exc()
