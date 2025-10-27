@@ -1,5 +1,6 @@
 # ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM INTERFACE
-# CORREÇÃO DEFINITIVA: Escapando todas as chaves literais {{}} no bloco HTML.
+# CORREÇÃO DEFINITIVA: Remoção completa do f-string no bloco HTML principal, usando .format()
+# para eliminar problemas de SyntaxError devido a chaves literais.
 
 from flask import Flask, json
 import requests
@@ -231,7 +232,6 @@ def formatar_historico_html(historico):
         classe = 'win' if 'WIN' in item['resultado'] else 'loss'
         
         # Cria a linha formatada. Usando aspas duplas fora, e simples dentro, é mais seguro.
-        # Aqui, estamos usando chaves normais pois estamos fora do bloco triplo-aspado do HTML
         linha = (
             f"[{item['horario']}] {item['ativo']} -> "
             f"<span class='{classe}'>{item['resultado']}</span> "
@@ -284,12 +284,13 @@ def home():
     sinal_classe_animacao = ''
     alerta_js = "" 
 
+    # Lógica de Áudio e Cores
     if 'FORTE 🚀' in ULTIMO_SINAL['sinal']:
         sinal_cor_fundo = 'var(--compra-fundo)' 
         sinal_cor_borda = 'var(--compra-borda)' 
         sinal_classe_animacao = 'signal-active' 
-        # Adiciona a lógica de áudio no JS (variáveis Python fora do f-string)
-        alerta_js = f"""
+        # Adiciona a lógica de áudio no JS (string normal)
+        alerta_js = """
             var audio = document.getElementById('alertaAudio');
             audio.currentTime = 0; 
             audio.volume = 0.8; 
@@ -299,8 +300,8 @@ def home():
         sinal_cor_fundo = 'var(--venda-fundo)' 
         sinal_cor_borda = 'var(--venda-borda)' 
         sinal_classe_animacao = 'signal-active' 
-        # Adiciona a lógica de áudio no JS (variáveis Python fora do f-string)
-        alerta_js = f"""
+        # Adiciona a lógica de áudio no JS (string normal)
+        alerta_js = """
             var audio = document.getElementById('alertaAudio');
             audio.currentTime = 0; 
             audio.volume = 0.8; 
@@ -313,11 +314,9 @@ def home():
 
     # Cores e texto para a Caixa de Último Sinal
     if ultimo_sinal_tipo == 'COMPRA':
-        # Usando a variável CSS diretamente para evitar problemas de aspas
         ultimo_sinal_cor_css = 'var(--compra-borda)' 
         ultimo_sinal_texto = f'✅ Última Entrada: COMPRA (Horário: {ultimo_sinal_hora})'
     elif ultimo_sinal_tipo == 'VENDA':
-        # Usando a variável CSS diretamente para evitar problemas de aspas
         ultimo_sinal_cor_css = 'var(--venda-borda)'
         ultimo_sinal_texto = f'❌ Última Entrada: VENDA (Horário: {ultimo_sinal_hora})'
     else:
@@ -341,8 +340,7 @@ def home():
     # 2. Pré-calcula o HTML do Histórico
     historico_html = formatar_historico_html(HISTORICO_SINAIS)
     
-    # === Bloco de CSS Estático - Escapando todas as chaves literais com {{ }} ===
-    # Apenas as variáveis Python serão interpoladas. As chaves do CSS ficam intactas.
+    # === Bloco de CSS Estático - F-string para injetar variáveis Python de cor, mas com as chaves LITERAIS {{ }} escapadas ===
     css_content = f"""
     /* Paleta de Cores e Estilos */
     :root {{
@@ -508,9 +506,8 @@ def home():
     }}
     """
 
-    # HTML com CSS e o elemento de Áudio
-    # Usando o f-string triplo-aspado principal para o HTML
-    html_content = f"""
+    # HTML sem f-string, usando placeholders {}
+    html_content = """
     <!DOCTYPE
     html>
     <html lang="pt-BR">
@@ -527,7 +524,7 @@ def home():
         </style>
     </head>
     <body>
-        <audio id="alertaAudio" src="{URL_ALERTE_SONORO}" preload="auto"></audio>
+        <audio id="alertaAudio" src="{url_alerta_sonoro}" preload="auto"></audio>
 
         <div class="container">
             <h1>ROBÔ TRADER M1 | DASHBOARD SNIPER</h1>
@@ -538,4 +535,13 @@ def home():
             </div>
 
             <div class="warning-message">
-                ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para liberar 
+                ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para liberar o som.
+            </div>
+
+            <div class="last-signal-box">
+                {ultimo_sinal_texto}
+            </div>
+
+            <div class="main-content-grid">
+                <div class="sinal-box {sinal_classe_animacao}">
+                    <div class="sin
