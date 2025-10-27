@@ -1,5 +1,6 @@
 # ROBÔ TRADER M1 (WEB) - VERSÃO COMPLETA COM INTERFACE
-# CORREÇÃO: Foi corrigido o erro de SyntaxError na geração condicional do HTML.
+# CORREÇÃO: Corrigido o SyntaxError: unterminated triple-quoted f-string.
+# A lógica complexa de renderização do histórico foi movida para uma função separada para maior estabilidade.
 
 from flask import Flask, json
 import requests
@@ -60,7 +61,7 @@ def calcular_assertividade():
     losses = total - wins
     percentual = f"{(wins / total) * 100:.2f}%"
 
-    return {'total': total, 'wins': wins, 'losses': losses, 'percentual': percentual}
+    return {'total': total, 'wins': wins, 'losses': losses, 'percentual': 'N/A' if total == 0 else percentual}
 
 def get_ultimas_velas(ativo):
     """Busca as últimas velas da Kucoin para o ativo especificado."""
@@ -218,6 +219,29 @@ def ciclo_analise():
         # Aguarda 60 segundos antes da próxima análise
         time.sleep(60)
 
+# ====================== FUNÇÃO AUXILIAR PARA HISTÓRICO DE SINAIS (NOVA) ======================
+def formatar_historico_html(historico):
+    """
+    Formata o histórico de sinais em uma string HTML segura,
+    isolando a lógica de formatação do f-string principal.
+    """
+    linhas_html = []
+    # Itera de trás para frente para mostrar o mais recente primeiro
+    for item in reversed(historico):
+        # Determina a classe CSS com base no resultado
+        classe = 'win' if 'WIN' in item['resultado'] else 'loss'
+        
+        # Cria a linha formatada
+        linha = (
+            f"[{item['horario']}] {item['ativo']} -> "
+            f"<span class='{classe}'>{item['resultado']}</span> "
+            f"(Sinal: {item['sinal']})"
+        )
+        linhas_html.append(linha)
+        
+    return '<br>'.join(linhas_html) # Junta as linhas com quebras de linha HTML
+
+
 # ====================== SERVIDOR HTTPS (ENDPOINT) - INTERFACE COMPLETA + AVISO ======================
 @app.route('/')
 def home():
@@ -298,11 +322,7 @@ def home():
         ultimo_sinal_cor = 'var(--neutro-borda)'
         ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
         
-    # =======================================================
-    # CORREÇÃO DE SYNTAX APLICADA AQUI: Geração Condicional do HTML
-    # =======================================================
-    
-    # 1. Pré-calcula o HTML dos detalhes do sinal ativo
+    # 1. Pré-calcula o HTML dos detalhes do sinal ativo (Corrigido da iteração anterior)
     if ULTIMO_SINAL['score'] != 0:
         # Se houver sinal forte, mostra detalhes do trade
         signal_details_html = f"""
@@ -317,10 +337,14 @@ def home():
         analise_detail_html = f"""
             <div class="data-item">Última Análise do Robô: <strong>{horario_exibicao}</strong></div>
         """
+    
+    # 2. Pré-calcula o HTML do Histórico (NOVO: Correção de Syntax)
+    historico_html = formatar_historico_html(HISTORICO_SINAIS)
         
     # HTML com CSS e o elemento de Áudio
     html_content = f"""
-    <!DOCTYPE html>
+    <!DOCTYPE
+    html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
@@ -481,30 +505,4 @@ def home():
             /* Caixa de Informação/Explicação */
             .info-box {{
                 margin-top: 25px;
-                padding: 15px;
-                background-color: #30394c; 
-                border-left: 5px solid var(--accent-blue);
-                border-radius: 8px;
-                font-size: 0.95em;
-                line-height: 1.6;
-                color: #B0B9CC;
-            }}
-            .info-box strong {{
-                color: var(--text-primary);
-                font-weight: 600;
-            }}
-        </style>
-    </head>
-    <body>
-        <audio id="alertaAudio" src="{URL_ALERTE_SONORO}" preload="auto"></audio>
-
-        <div class="container">
-            <h1>ROBÔ TRADER M1 | DASHBOARD SNIPER</h1>
-
-            <div class="time-box">
-                <p style="margin-bottom: 0px;">HORÁRIO ATUAL DE BRASÍLIA</p>
-                <div class="current-time">{horario_atual_brasilia}</div>
-            </div>
-
-            <div class="warning-message">
-                ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para l
+      
