@@ -1,6 +1,7 @@
 # main.py
 # ROBÔ TRADER M1 (WEB) - VERSÃO CORRIGIDA
 # Corrige erro de string tripla e mantém interface
+# Aprimorado: Cores do Sinal Dinâmicas no Dashboard
 
 from flask import Flask, Response
 import requests
@@ -21,7 +22,7 @@ NUM_VELAS_ANALISE = 3
 SCORE_MINIMO_SINAL = 2.0
 MAX_HISTORICO = 10
 
-# URL DO SOM DE ALERTA
+# URL DO SOM DE ALERTE
 URL_ALERTE_SONORO = "https://www.soundhelix.com/examples/audio/Wave-beep.wav"
 
 # ====================== INICIALIZAÇÃO DO FLASK ======================
@@ -204,7 +205,7 @@ def ciclo_analise():
             traceback.print_exc()
         time.sleep(60)
 
-# start background analysis thread
+# Inicia a thread de análise em segundo plano
 analysis_thread = Thread(target=ciclo_analise, daemon=True)
 analysis_thread.start()
 
@@ -217,13 +218,24 @@ def home():
 
         sinal_exibicao = ULTIMO_SINAL['sinal']
         horario_exibicao = ULTIMO_SINAL['horario']
-
+        
+        # --- Lógica de Cor e Animação ---
+        sinal_cor_fundo = 'var(--neutro-fundo)'
+        sinal_cor_borda = 'var(--neutro-borda)'
+        sinal_classe_animacao = ''
+        
         if 'COMPRA FORTE' in ULTIMO_SINAL['sinal']:
+            sinal_cor_fundo = 'var(--compra-fundo)' 
+            sinal_cor_borda = 'var(--compra-borda)' 
+            sinal_classe_animacao = 'signal-active'
             explicacao = (
                 f"Entrada de <strong>COMPRA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
                 f"<br>Estratégia: O preço demonstrou força de alta por <strong>duas ou mais velas M1 consecutivas</strong> (Score: {ULTIMO_SINAL['score']})."
             )
         elif 'VENDA FORTE' in ULTIMO_SINAL['sinal']:
+            sinal_cor_fundo = 'var(--venda-fundo)' 
+            sinal_cor_borda = 'var(--venda-borda)' 
+            sinal_classe_animacao = 'signal-active'
             explicacao = (
                 f"Entrada de <strong>VENDA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
                 f"<br>Estratégia: O preço demonstrou força de baixa por <strong>duas ou mais velas M1 consecutivas</strong> (Score: {ULTIMO_SINAL['score']})."
@@ -234,6 +246,7 @@ def home():
                 "No momento, o robô está em <strong>NEUTRO</strong>. Nenhuma moeda atingiu score 2 ou -2."
                 "<br>Estratégia: Aguardando a formação de <strong>duas ou mais velas M1 consecutivas</strong> na mesma direção forte."
             )
+        # --- Fim Lógica de Cor e Animação ---
 
         ultimo_sinal_hora = ULTIMO_SINAL_REGISTRADO['horario']
         ultimo_sinal_tipo = ULTIMO_SINAL_REGISTRADO['sinal_tipo']
@@ -264,8 +277,16 @@ def home():
 
         historico_html = formatar_historico_html(HISTORICO_SINAIS)
 
-        # css_content usa {{ }} no literal para preservar chaves na string final
+        # Usando ''' para o CSS para evitar conflitos de aspas
+        # Variáveis dinâmicas para o CSS são injetadas aqui
         css_content = f'''
+        @keyframes pulse {{
+            0% {{ box-shadow: 0 0 0 0 rgba(112, 160, 255, 0.7); }}
+            70% {{ box-shadow: 0 0 0 15px rgba(112, 160, 255, 0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(112, 160, 255, 0); }}
+        }}
+
+        /* Paleta de Cores e Estilos */
         :root {{
             --bg-primary: #1C2331;
             --bg-secondary: #2A3346;
@@ -273,10 +294,10 @@ def home():
             --accent-blue: #70A0FF;
             --neutro-fundo: #374257;
             --neutro-borda: #4D5970;
-            --compra-fundo: #2D4C42;
-            --compra-borda: #6AA84F;
-            --venda-fundo: #5C3A3A;
-            --venda-borda: #E06666;
+            --compra-fundo: #2D4C42; /* Verde Trade Escuro */
+            --compra-borda: #6AA84F; /* Verde Trade */
+            --venda-fundo: #5C3A3A; /* Vermelho Trade Escuro */
+            --venda-borda: #E06666; /* Vermelho Trade */
             --assert-fundo: #3B3F50;
             --assert-borda: #FFC107;
         }}
@@ -302,13 +323,34 @@ def home():
         .last-signal-box {{ background-color: #3B3F50; border: 1px solid #4D5970; border-left: 5px solid {ultimo_sinal_cor_css}; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 1.0em; font-weight: 500; color: var(--text-primary); text-align: center; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); }}
         .main-content-grid {{ display: flex; gap: 15px; margin-bottom: 25px; flex-direction: column; }}
         @media (min-width: 768px) {{ .main-content-grid {{ flex-direction: row; }} }}
-        .sinal-box, .assertividade-box {{ flex: 1; padding: 20px; border-radius: 15px; transition: all 0.5s ease-in-out; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }}
-        .sinal-box {{ background-color: var(--neutro-fundo); border: 2px solid var(--neutro-borda); }}
-        .sinal-header {{ font-size: 1.8em; font-weight: 700; color: var(--neutro-borda); margin-bottom: 10px; }}
+        
+        /* CORES DINÂMICAS DO SINAL */
+        .sinal-box {{ 
+            flex: 1; padding: 20px; border-radius: 15px; transition: all 0.5s ease-in-out; box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            background-color: {sinal_cor_fundo}; 
+            border: 2px solid {sinal_cor_borda}; 
+        }}
+        .sinal-header {{ 
+            font-size: 1.8em; font-weight: 700; margin-bottom: 10px; 
+            color: {sinal_cor_borda}; /* Cor do texto no header é a mesma da borda */
+        }}
+
         .data-item {{ margin-bottom: 8px; font-size: 1.0em; font-weight: 400; }}
         .data-item strong {{ font-weight: 600; color: #FFFFFF; }}
-        .signal-active {{ box-shadow: 0 0 20px var(--neutro-borda); transform: translateY(-2px); }}
-        .assertividade-box {{ background-color: var(--assert-fundo); border: 2px solid var(--assert-borda); text-align: center; display:flex; flex-direction: column; justify-content:center; }}
+        
+        /* ANIMAÇÃO DE ALERTA */
+        .signal-active {{ 
+            animation: pulse 1s infinite;
+            box-shadow: 0 0 20px {sinal_cor_borda};
+            transform: translateY(-2px);
+        }}
+
+        .assertividade-box {{ 
+            background-color: var(--assert-fundo); border: 2px solid var(--assert-borda); text-align: center; display:flex; flex-direction: column; justify-content:center; 
+        }}
+        .assertividade-box span {{ font-weight: 700; color: var(--assert-borda); font-size: 2.5em; line-height: 1.1; margin: 5px 0; }}
+
+        h2 {{ color: var(--accent-blue); font-weight: 600; margin-bottom: 10px; font-size: 1.5em; }}
         pre {{ background-color: #101520; padding: 15px; border-radius: 12px; overflow:auto; color: #B0B0B0; font-size: 0.85em; }}
         .win {{ color: var(--compra-borda); font-weight:700; }}
         .loss {{ color: var(--venda-borda); font-weight:700; }}
@@ -346,7 +388,7 @@ def home():
     <div class="last-signal-box">{ultimo_sinal_texto}</div>
 
     <div class="main-content-grid">
-        <div class="sinal-box">
+        <div class="sinal-box {sinal_classe_animacao}">
             <div class="sinal-header">SINAL ATUAL</div>
             <div class="data-item">Sinal: <strong>{sinal_exibicao}</strong></div>
             <div class="data-item">Ativo: <strong>{ULTIMO_SINAL['ativo']}</strong></div>
@@ -356,8 +398,8 @@ def home():
 
         <div class="assertividade-box">
             <p>Assertividade</p>
-            <span>{calcular_assertividade()['percentual']}</span>
-            <p style="margin-top:8px;">Wins: {calcular_assertividade()['wins']} / Total: {calcular_assertividade()['total']}</p>
+            <span>{assertividade_data['percentual']}</span>
+            <p style="margin-top:8px;">Wins: {assertividade_data['wins']} / Total: {assertividade_data['total']}</p>
         </div>
     </div>
 
@@ -371,13 +413,31 @@ def home():
 </div>
 
 <script>
+// Lógica de áudio para tocar o bipe em caso de sinal FORTE
+function checkSignalAndPlayAudio() {{
+    const signal = "{sinal_exibicao}";
+    const audio = document.getElementById('alertaAudio');
+    
+    // Toca o áudio apenas se for um sinal FORTE e se o áudio estiver carregado
+    if (signal.includes('FORTE') && audio) {{
+        audio.currentTime = 0; 
+        audio.volume = 0.8; 
+        audio.play().catch(function(e){{ console.log('Áudio bloqueado pelo navegador.', e); }});
+    }}
+}}
+
+// Tenta tocar o áudio imediatamente se houver sinal forte (pode falhar devido a políticas de autoplay)
+checkSignalAndPlayAudio();
+
+// Adiciona um evento de clique para desbloquear o áudio, caso o navegador o tenha bloqueado
 document.addEventListener('click', function() {{
     var audio = document.getElementById('alertaAudio');
-    if (audio) {{
-        audio.volume = 0.8;
-        audio.play().catch(function(e){{ console.log('Áudio bloqueado: ', e); }});
+    if (audio && audio.paused) {{
+        audio.volume = 0; // Toca silenciosamente para desbloquear
+        audio.play().catch(function(e){{ console.log('Áudio desbloqueado em clique.', e); }});
+        audio.volume = 0.8; // Volta ao volume normal
     }}
-}});
+}}, {{ once: true }}); // Executa apenas uma vez para desbloquear
 </script>
 </body>
 </html>
