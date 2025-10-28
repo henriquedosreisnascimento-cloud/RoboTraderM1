@@ -1,7 +1,7 @@
 from flask import Flask, render_template_string
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import pytz
 import os
@@ -11,7 +11,6 @@ app = Flask(__name__)
 # ===================== CONFIGURAÇÕES =====================
 TIMEZONE_BR = pytz.timezone("America/Sao_Paulo")
 ATIVOS = ["BTC-USDT", "ETH-USDT"]
-INTERVALO = 60  # 1 minuto
 historico = []
 sinal_atual = {"ativo": "-", "tipo": "-", "hora": "-", "resultado": "-"}
 assertividade = 0.0  # Percentual de WIN
@@ -36,8 +35,8 @@ def gerar_sinal(preco_atual, preco_anterior):
         return "SEM SINAL"
 
 def checar_resultado(ativo, preco_inicial, direcao):
-    """Simula o resultado (WIN/LOSS) após 1 minuto"""
-    time.sleep(10)  # Aguarda 10s (simulação)
+    """Simula o resultado (WIN/LOSS) após 10s"""
+    time.sleep(10)
     preco_final = obter_preco(ativo)
     if not preco_final:
         return "SEM DADOS"
@@ -57,29 +56,36 @@ def atualizar_assertividade():
         wins = sum(1 for h in historico if h["resultado"] == "WIN")
         assertividade = round((wins / total) * 100, 1)
 
+# ===================== LOOP PRINCIPAL =====================
 def atualizar_robô():
     precos_anteriores = {a: None for a in ATIVOS}
     global sinal_atual
     while True:
-        for ativo in ATIVOS:
-            preco = obter_preco(ativo)
-            sinal = gerar_sinal(preco, precos_anteriores[ativo])
-            hora = datetime.now(TIMEZONE_BR).strftime("%H:%M:%S")
+        agora = datetime.now(TIMEZONE_BR)
+        segundos = agora.second
+        # Gera sinal 5s antes da nova vela
+        if segundos >= 55:
+            for ativo in ATIVOS:
+                preco = obter_preco(ativo)
+                sinal = gerar_sinal(preco, precos_anteriores[ativo])
+                hora = agora.strftime("%H:%M:%S")
 
-            if sinal != "SEM SINAL":
-                resultado = checar_resultado(ativo, preco, sinal)
-                historico.insert(0, {
-                    "ativo": ativo,
-                    "sinal": sinal,
-                    "hora": hora,
-                    "resultado": resultado
-                })
-                sinal_atual = {"ativo": ativo, "tipo": sinal, "hora": hora, "resultado": resultado}
-                atualizar_assertividade()
+                if sinal != "SEM SINAL":
+                    resultado = checar_resultado(ativo, preco, sinal)
+                    historico.insert(0, {
+                        "ativo": ativo,
+                        "sinal": sinal,
+                        "hora": hora,
+                        "resultado": resultado
+                    })
+                    sinal_atual = {"ativo": ativo, "tipo": sinal, "hora": hora, "resultado": resultado}
+                    atualizar_assertividade()
 
-            precos_anteriores[ativo] = preco
-            time.sleep(2)
-        time.sleep(INTERVALO)
+                precos_anteriores[ativo] = preco
+            # Aguarda 6s para não gerar múltiplos sinais na mesma vela
+            time.sleep(6)
+        else:
+            time.sleep(0.5)
 
 # ===================== DASHBOARD =====================
 HTML_TEMPLATE = """
@@ -124,9 +130,9 @@ footer {
     font-size: 13px;
     color: #aaa;
 }
-.assertividade {
+.assertividade, .ultimo-sinal {
     font-size: 18px;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     color: #00ffff;
     font-weight: bold;
 }
@@ -144,6 +150,8 @@ async function atualizarPainel(){
         data.tipo === "VENDA" ? "sinal-venda" : "sinal-sem";
 
     document.getElementById('assertividade').innerText = "Assertividade: " + data.assertividade + "% WIN";
+    document.getElementById('ultimo-sinal').innerText = 
+        data.sinal_atual_text;
 
     let histHTML = "";
     data.historico.forEach(h=>{
@@ -163,6 +171,7 @@ setInterval(atualizarPainel, 3000);
     <div class="card">
         <h1>🤖 Robô Trader M1</h1>
         <div class="assertividade" id="assertividade">Assertividade: 0% WIN</div>
+        <div class="ultimo-sinal" id="ultimo-sinal">Último Sinal: -</div>
         <p>Ativo: <span id="ativo">-</span></p>
         <p>Sinal Atual: <span id="tipo">-</span></p>
         <p>Hora: <span id="hora">-</span></p>
@@ -187,12 +196,17 @@ def index():
 
 @app.route("/dados")
 def dados():
+    if sinal_atual["ativo"] != "-":
+        sinal_text = f'Último Sinal: {sinal_atual["tipo"]} às {sinal_atual["hora"]} → {sinal_atual["resultado"]}'
+    else:
+        sinal_text = "Último Sinal: -"
     return {
         "ativo": sinal_atual["ativo"],
         "tipo": sinal_atual["tipo"],
         "hora": sinal_atual["hora"],
         "historico": historico[:10],
-        "assertividade": assertividade
+        "assertividade": assertividade,
+        "sinal_atual_text": sinal_text
     }
 
 # ===================== THREAD =====================
