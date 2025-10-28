@@ -1,218 +1,122 @@
-from flask import Flask, render_template_string
-import threading
-import time
-from datetime import datetime, timedelta
+# main.py
+# ROBÔ TRADER M1 (OTIMIZADO) - PRESSÃO DE VELAS + MOMENTUM
+# Funciona em BTC-USDT e ETH-USDT
+# Avaliação de sinais a cada M1, com histórico e assertividade
+# Preparado para rodar no Replit/GitHub
+
 import requests
-import pytz
-import os
+import json
+import time
+from datetime import datetime
 
-app = Flask(__name__)
-
-# ===================== CONFIGURAÇÕES =====================
-TIMEZONE_BR = pytz.timezone("America/Sao_Paulo")
+# Configurações iniciais
 ATIVOS = ["BTC-USDT", "ETH-USDT"]
-historico = []
-sinal_atual = {"ativo": "-", "tipo": "-", "hora": "-", "resultado": "-"}
-assertividade = 0.0  # Percentual de WIN
+PERCENT_DIFF = 0.02  # 2% de diferença mínima para sinal (ajustável)
+HISTORICO = []
+ULTIMO_SINAL = {"ativo": None, "tipo": None, "hora": None, "resultado": None}
 
-# ===================== FUNÇÃO DE SINAL =====================
-def obter_preco(ativo):
+# Função para pegar preço atual via API pública KuCoin
+def pegar_preco(at):
+    url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={at}"
     try:
-        r = requests.get(f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={ativo}")
-        return float(r.json()["data"]["price"])
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        return float(data['data']['price'])
     except:
         return None
 
-def gerar_sinal(preco_atual, preco_anterior):
-    if preco_atual is None or preco_anterior is None:
-        return "SEM SINAL"
-    diff = preco_atual - preco_anterior
-    if diff > 0.02:
-        return "COMPRA"
-    elif diff < -0.02:
-        return "VENDA"
-    else:
-        return "SEM SINAL"
+# Função para calcular momentum simples
+def calcular_momentum(precos):
+    if len(precos) < 3:
+        return 0
+    return precos[-1] - precos[-3]
 
-def checar_resultado(ativo, preco_inicial, direcao):
-    """Simula o resultado (WIN/LOSS) após 10s"""
-    time.sleep(10)
-    preco_final = obter_preco(ativo)
-    if not preco_final:
-        return "SEM DADOS"
-    if direcao == "COMPRA" and preco_final > preco_inicial:
-        return "WIN"
-    elif direcao == "VENDA" and preco_final < preco_inicial:
-        return "WIN"
-    else:
-        return "LOSS"
+# Função para verificar pressão de vela (alta ou baixa)
+def pressao_vela(preco_abertura, preco_fechamento):
+    return "alta" if preco_fechamento > preco_abertura else "baixa"
 
-def atualizar_assertividade():
-    global assertividade
-    total = len(historico)
-    if total == 0:
-        assertividade = 0.0
-    else:
-        wins = sum(1 for h in historico if h["resultado"] == "WIN")
-        assertividade = round((wins / total) * 100, 1)
+# Função para gerar sinal
+def gerar_sinal(preco_atual, preco_anterior, momentum, pressao):
+    sinal = None
+    # Filtro por momentum e pressão da vela
+    if momentum > 0 and pressao == "alta":
+        if (preco_atual - preco_anterior)/preco_anterior >= PERCENT_DIFF/100:
+            sinal = "CALL"
+    elif momentum < 0 and pressao == "baixa":
+        if (preco_anterior - preco_atual)/preco_anterior >= PERCENT_DIFF/100:
+            sinal = "PUT"
+    return sinal
 
-# ===================== LOOP PRINCIPAL =====================
-def atualizar_robô():
-    precos_anteriores = {a: None for a in ATIVOS}
-    global sinal_atual
+# Função para checar resultado do sinal
+def checar_resultado(preco_entrada, preco_saida, tipo):
+    if tipo == "CALL":
+        return "WIN" if preco_saida > preco_entrada else "LOSS"
+    elif tipo == "PUT":
+        return "WIN" if preco_saida < preco_entrada else "LOSS"
+    return None
+
+# Função principal
+def main():
+    precos_anteriores = {at: [] for at in ATIVOS}
+    precos_abertura = {at: None for at in ATIVOS}
+
     while True:
-        agora = datetime.now(TIMEZONE_BR)
-        segundos = agora.second
-        # Gera sinal 5s antes da nova vela
-        if segundos >= 55:
-            for ativo in ATIVOS:
-                preco = obter_preco(ativo)
-                sinal = gerar_sinal(preco, precos_anteriores[ativo])
-                hora = agora.strftime("%H:%M:%S")
+        for ativo in ATIVOS:
+            preco_atual = pegar_preco(ativo)
+            if preco_atual is None:
+                continue
 
-                if sinal != "SEM SINAL":
-                    resultado = checar_resultado(ativo, preco, sinal)
-                    historico.insert(0, {
-                        "ativo": ativo,
-                        "sinal": sinal,
-                        "hora": hora,
-                        "resultado": resultado
-                    })
-                    sinal_atual = {"ativo": ativo, "tipo": sinal, "hora": hora, "resultado": resultado}
-                    atualizar_assertividade()
+            # Guardar preço de abertura da vela
+            if precos_abertura[ativo] is None:
+                precos_abertura[ativo] = preco_atual
 
-                precos_anteriores[ativo] = preco
-            # Aguarda 6s para não gerar múltiplos sinais na mesma vela
-            time.sleep(6)
-        else:
-            time.sleep(0.5)
+            # Histórico de preços para momentum
+            precos_anteriores[ativo].append(preco_atual)
+            if len(precos_anteriores[ativo]) > 10:
+                precos_anteriores[ativo].pop(0)
 
-# ===================== DASHBOARD =====================
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-<meta charset="UTF-8">
-<title>Robô Trader M1 - Dashboard</title>
-<style>
-body {
-    background: radial-gradient(circle at top left, #0f2027, #203a43, #2c5364);
-    color: white;
-    font-family: 'Segoe UI', sans-serif;
-    text-align: center;
-    padding: 20px;
-}
-.card {
-    background: rgba(255,255,255,0.08);
-    border-radius: 20px;
-    padding: 20px;
-    margin: 20px auto;
-    width: 90%;
-    box-shadow: 0 0 10px rgba(0,0,0,0.5);
-}
-h1 { color: #00ffff; }
-.sinal-compra { color: #00ff00; font-weight: bold; }
-.sinal-venda { color: #ff5555; font-weight: bold; }
-.sinal-sem { color: #ffff00; font-weight: bold; }
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 20px;
-}
-th, td {
-    padding: 10px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-}
-.win { color: #00ff7f; font-weight: bold; }
-.loss { color: #ff4444; font-weight: bold; }
-footer {
-    margin-top: 30px;
-    font-size: 13px;
-    color: #aaa;
-}
-.assertividade, .ultimo-sinal {
-    font-size: 18px;
-    margin-bottom: 10px;
-    color: #00ffff;
-    font-weight: bold;
-}
-</style>
-<script>
-async function atualizarPainel(){
-    const r = await fetch('/dados');
-    const data = await r.json();
+            momentum = calcular_momentum(precos_anteriores[ativo])
+            pressao = pressao_vela(precos_abertura[ativo], preco_atual)
+            preco_anterior = precos_anteriores[ativo][-2] if len(precos_anteriores[ativo]) > 1 else preco_atual
 
-    document.getElementById('ativo').innerText = data.ativo;
-    document.getElementById('tipo').innerText = data.tipo;
-    document.getElementById('hora').innerText = data.hora;
-    document.getElementById('tipo').className =
-        data.tipo === "COMPRA" ? "sinal-compra" :
-        data.tipo === "VENDA" ? "sinal-venda" : "sinal-sem";
+            # Gerar sinal
+            sinal = gerar_sinal(preco_atual, preco_anterior, momentum, pressao)
+            if sinal:
+                hora_sinal = datetime.now().strftime("%H:%M:%S")
+                print(f"[{hora_sinal}] {ativo} -> SINAL: {sinal}")
+                
+                # Esperar até final da vela para avaliar resultado (50s)
+                time.sleep(50)
+                preco_fechamento = pegar_preco(ativo)
+                resultado = checar_resultado(preco_atual, preco_fechamento, sinal)
+                print(f"[{hora_sinal}] {ativo} -> RESULTADO: {resultado}")
 
-    document.getElementById('assertividade').innerText = "Assertividade: " + data.assertividade + "% WIN";
-    document.getElementById('ultimo-sinal').innerText = 
-        data.sinal_atual_text;
+                # Atualizar histórico
+                HISTORICO.append({
+                    "ativo": ativo,
+                    "sinal": sinal,
+                    "hora": hora_sinal,
+                    "resultado": resultado
+                })
+                # Atualizar último sinal
+                ULTIMO_SINAL.update({
+                    "ativo": ativo,
+                    "tipo": sinal,
+                    "hora": hora_sinal,
+                    "resultado": resultado
+                })
 
-    let histHTML = "";
-    data.historico.forEach(h=>{
-        histHTML += `<tr>
-            <td>${h.ativo}</td>
-            <td>${h.sinal}</td>
-            <td>${h.hora}</td>
-            <td class="${h.resultado=="WIN"?"win":"loss"}">${h.resultado}</td>
-        </tr>`;
-    });
-    document.getElementById('historico').innerHTML = histHTML;
-}
-setInterval(atualizarPainel, 3000);
-</script>
-</head>
-<body>
-    <div class="card">
-        <h1>🤖 Robô Trader M1</h1>
-        <div class="assertividade" id="assertividade">Assertividade: 0% WIN</div>
-        <div class="ultimo-sinal" id="ultimo-sinal">Último Sinal: -</div>
-        <p>Ativo: <span id="ativo">-</span></p>
-        <p>Sinal Atual: <span id="tipo">-</span></p>
-        <p>Hora: <span id="hora">-</span></p>
-    </div>
+            # Resetar preço de abertura no próximo minuto
+            if datetime.now().second >= 55:
+                precos_abertura[ativo] = None
 
-    <div class="card">
-        <h2>📊 Histórico de Trades</h2>
-        <table>
-            <thead><tr><th>Ativo</th><th>Sinal</th><th>Hora</th><th>Resultado</th></tr></thead>
-            <tbody id="historico"></tbody>
-        </table>
-    </div>
+        # Calcular assertividade
+        if len(HISTORICO) > 0:
+            wins = sum(1 for h in HISTORICO if h["resultado"] == "WIN")
+            assertividade = round((wins / len(HISTORICO)) * 100, 1)
+            print(f"Assertividade atual: {assertividade}% | Total trades: {len(HISTORICO)}")
 
-    <footer>© 2025 Polarium Broker | Desenvolvido com GPT-5 e Henrique Dos Reis Nascimento</footer>
-</body>
-</html>
-"""
+        time.sleep(1)
 
-@app.route("/")
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route("/dados")
-def dados():
-    if sinal_atual["ativo"] != "-":
-        sinal_text = f'Último Sinal: {sinal_atual["tipo"]} às {sinal_atual["hora"]} → {sinal_atual["resultado"]}'
-    else:
-        sinal_text = "Último Sinal: -"
-    return {
-        "ativo": sinal_atual["ativo"],
-        "tipo": sinal_atual["tipo"],
-        "hora": sinal_atual["hora"],
-        "historico": historico[:10],
-        "assertividade": assertividade,
-        "sinal_atual_text": sinal_text
-    }
-
-# ===================== THREAD =====================
-t = threading.Thread(target=atualizar_robô, daemon=True)
-t.start()
-
-# ===================== EXECUÇÃO =====================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    main()
