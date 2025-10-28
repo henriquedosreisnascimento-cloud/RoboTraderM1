@@ -1,4 +1,3 @@
-Flask
-requests
-pytz
-gunicorn
+Flask==2.2.5
+requests==2.31.0
+pytz==2024.1
