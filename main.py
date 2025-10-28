@@ -1,33 +1,32 @@
 # main.py
-# ROBÔ TRADER M1 (WEB) - VERSÃO CORRIGIDA
-# Corrige erro de string tripla e mantém interface
+# ROBÔ TRADER M1 (WEB) - DASHBOARD VISUAL COM GRÁFICO
+# Inclui sinais fortes, gráfico de velas em tempo real e histórico colorido
 
-from flask import Flask, Response
+from flask import Flask, Response, jsonify
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from threading import Thread
 import os
 import copy
 import traceback
+import json
 
 # ====================== CONFIGURAÇÕES ======================
 TIMEZONE_BR = 'America/Sao_Paulo'
 ATIVOS_MONITORADOS = ['BTC-USDT', 'ETH-USDT', 'EUR-USDT']
 API_BASE_URL = 'https://api.kucoin.com/api/v1/market/candles'
 INTERVALO = '1min'
-NUM_VELAS_ANALISE = 3
+NUM_VELAS_ANALISE = 30  # para o gráfico
 SCORE_MINIMO_SINAL = 2.0
 MAX_HISTORICO = 10
-
-# URL DO SOM DE ALERTA
 URL_ALERTE_SONORO = "https://www.soundhelix.com/examples/audio/Wave-beep.wav"
 
 # ====================== INICIALIZAÇÃO DO FLASK ======================
 app = Flask(__name__)
 
-# ====================== VARIÁVEIS GLOBAIS DE ESTADO ======================
+# ====================== VARIÁVEIS GLOBAIS ======================
 def get_horario_brasilia():
     fuso_brasil = pytz.timezone(TIMEZONE_BR)
     return datetime.now(fuso_brasil)
@@ -40,26 +39,23 @@ ULTIMO_SINAL = {
     'preco_entrada': 0.0
 }
 
-ULTIMO_SINAL_REGISTRADO = {
-    'horario': 'N/A',
-    'sinal_tipo': 'N/A'
-}
-
+ULTIMO_SINAL_REGISTRADO = {'horario': 'N/A', 'sinal_tipo': 'N/A'}
 HISTORICO_SINAIS = []
 ULTIMO_SINAL_CHECAR = None
+VELAS_ATIVOS = {ativo: [] for ativo in ATIVOS_MONITORADOS}
 
 # ====================== FUNÇÕES BASE ======================
 def calcular_assertividade():
     if not HISTORICO_SINAIS:
         return {'total': 0, 'wins': 0, 'losses': 0, 'percentual': 'N/A'}
-
     wins = sum(1 for item in HISTORICO_SINAIS if item['resultado'] == 'WIN ✅')
     total = len(HISTORICO_SINAIS)
     losses = total - wins
-    percentual = f"{(wins / total) * 100:.2f}%" if total else 'N/A'
+    percentual = f"{(wins/total)*100:.2f}%" if total else 'N/A'
     return {'total': total, 'wins': wins, 'losses': losses, 'percentual': percentual}
 
 def get_ultimas_velas(ativo):
+    global VELAS_ATIVOS
     try:
         params = {'symbol': ativo, 'type': INTERVALO}
         r = requests.get(API_BASE_URL, params=params, timeout=8)
@@ -67,21 +63,25 @@ def get_ultimas_velas(ativo):
         data = r.json().get('data', [])
 
         velas = []
-        # pega as últimas velas
-        # v[1] = open, v[3] = close, v[4] = high, v[2] = low
-        for v in data[-(NUM_VELAS_ANALISE + 1):]: 
-            velas.append([float(v[1]), float(v[3]), float(v[4]), float(v[2])])
+        for v in data[-NUM_VELAS_ANALISE:]:
+            velas.append({
+                'time': int(v[0])//1000,  # timestamp em segundos
+                'open': float(v[1]),
+                'close': float(v[2]),
+                'high': float(v[3]),
+                'low': float(v[4])
+            })
+        VELAS_ATIVOS[ativo] = velas
         return velas
     except Exception as e:
         print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⚠️ Erro ao obter velas de {ativo}: {e}")
-        return []
+        return VELAS_ATIVOS.get(ativo, [])
 
 def analisar_price_action(velas):
     if len(velas) < 2:
         return {'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
-    o1, c1 = velas[-1][0], velas[-1][3]
-    o2, c2 = velas[-2][0], velas[-2][3]
-
+    o1, c1 = velas[-1]['open'], velas[-1]['close']
+    o2, c2 = velas[-2]['open'], velas[-2]['close']
     score = 0
     if c1 > o1: score += 1
     elif c1 < o1: score -= 1
@@ -98,7 +98,6 @@ def analisar_price_action(velas):
         sinal_emoji = 'VENDA Fraca 🔴'
     else:
         sinal_emoji = 'NEUTRO 🟡'
-
     return {'sinal': sinal_emoji, 'score': score, 'preco_entrada': c1}
 
 def checar_resultado_sinal(sinal_checar):
@@ -107,18 +106,13 @@ def checar_resultado_sinal(sinal_checar):
         ativo = sinal_checar['ativo']
         preco_entrada = sinal_checar['preco_entrada']
         direcao_sinal = sinal_checar['sinal']
-        if ativo == 'N/A' or 'NEUTRO' in direcao_sinal:
-            return
+        if ativo == 'N/A' or 'NEUTRO' in direcao_sinal: return
         velas = get_ultimas_velas(ativo)
-        if len(velas) < 1:
-            print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⚠️ Sem dados para checar resultado de {ativo}.")
-            return
-        c_exp = velas[-1][3]
+        if len(velas) < 1: return
+        c_exp = velas[-1]['close']
         resultado = 'NEUTRO'
-        if 'COMPRA' in direcao_sinal:
-            resultado = 'WIN ✅' if c_exp > preco_entrada else 'LOSS ❌'
-        elif 'VENDA' in direcao_sinal:
-            resultado = 'WIN ✅' if c_exp < preco_entrada else 'LOSS ❌'
+        if 'COMPRA' in direcao_sinal: resultado = 'WIN ✅' if c_exp > preco_entrada else 'LOSS ❌'
+        elif 'VENDA' in direcao_sinal: resultado = 'WIN ✅' if c_exp < preco_entrada else 'LOSS ❌'
 
         HISTORICO_SINAIS.append({
             'horario': sinal_checar['horario'],
@@ -128,11 +122,8 @@ def checar_resultado_sinal(sinal_checar):
             'preco_entrada': preco_entrada,
             'preco_expiracao': c_exp
         })
-
-        if len(HISTORICO_SINAIS) > MAX_HISTORICO:
-            HISTORICO_SINAIS.pop(0)
-
-        print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] 🎯 Resultado de {ativo} ({sinal_checar['horario']}): {resultado}")
+        if len(HISTORICO_SINAIS) > MAX_HISTORICO: HISTORICO_SINAIS.pop(0)
+        print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] 🎯 Resultado de {ativo}: {resultado}")
     except Exception:
         print("Erro em checar_resultado_sinal:")
         traceback.print_exc()
@@ -141,81 +132,41 @@ def formatar_historico_html(historico):
     linhas_html = []
     for item in reversed(historico):
         classe = 'win' if 'WIN' in item['resultado'] else 'loss'
-        linha = (
-            f"[{item['horario']}] {item['ativo']} -> "
-            f"<span class='{classe}'>{item['resultado']}</span> "
-            f"(Sinal: {item['sinal']})"
-        )
+        linha = f"[{item['horario']}] {item['ativo']} -> <span class='{classe}'>{item['resultado']}</span> (Sinal: {item['sinal']})"
         linhas_html.append(linha)
     return '\n'.join(linhas_html)
 
 # ====================== CICLO DE ANÁLISE (BACKGROUND) ======================
-def calcular_tempo_espera(segundos_antecedencia=5):
-    """Calcula o tempo de espera (em segundos) até os últimos segundos do minuto."""
-    agora = get_horario_brasilia()
-    
-    # Próximo minuto exato (Ex: 14:35:00)
-    proximo_minuto = agora.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    
-    # Tempo alvo de análise (5 segundos antes do fechamento)
-    tempo_alvo = proximo_minuto - timedelta(seconds=segundos_antecedencia)
-    
-    # Se o tempo_alvo já passou neste minuto, calcula para o próximo minuto
-    if tempo_alvo <= agora:
-        tempo_alvo += timedelta(minutes=1)
-
-    # Diferença em segundos para o tempo_alvo
-    espera_segundos = (tempo_alvo - agora).total_seconds()
-    
-    return espera_segundos
-
 def ciclo_analise():
     global ULTIMO_SINAL, ULTIMO_SINAL_CHECAR, ULTIMO_SINAL_REGISTRADO
-    
-    # Sleep inicial para sincronizar com o tempo alvo
-    time.sleep(calcular_tempo_espera(segundos_antecedencia=5)) 
-
+    time.sleep(1)
     while True:
         try:
             horario_atual_dt = get_horario_brasilia()
             horario_atual_str = horario_atual_dt.strftime('%H:%M:%S')
 
-            # Checa o resultado do sinal anterior (que expirou no minuto atual)
             if ULTIMO_SINAL_CHECAR:
                 checar_resultado_sinal(ULTIMO_SINAL_CHECAR)
                 ULTIMO_SINAL_CHECAR = None
 
-            print(f"[{horario_atual_str}] Iniciando novo ciclo de análise, 5s antes do fechamento da vela...")
             melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
-
             for ativo in ATIVOS_MONITORADOS:
                 velas = get_ultimas_velas(ativo)
                 analise = analisar_price_action(velas)
-                # Prioriza o melhor sinal
                 if abs(analise['score']) >= abs(melhor['score']):
                     melhor = {'ativo': ativo, **analise}
 
             if abs(melhor['score']) == SCORE_MINIMO_SINAL:
                 sinal_final = melhor
                 sinal_final['horario'] = horario_atual_str
-            else:
-                sinal_final = {
-                    'horario': horario_atual_str,
-                    'ativo': 'N/A',
-                    'sinal': 'NEUTRO 🟡',
-                    'score': 0,
-                    'preco_entrada': 0.0
-                }
-
-            # Registra o sinal forte para ser checado no próximo ciclo
-            if abs(sinal_final['score']) == SCORE_MINIMO_SINAL:
                 ULTIMO_SINAL_CHECAR = copy.deepcopy(sinal_final)
                 ULTIMO_SINAL_REGISTRADO = {
                     'horario': sinal_final['horario'],
                     'sinal_tipo': 'COMPRA' if 'COMPRA' in sinal_final['sinal'] else 'VENDA'
                 }
-            
-            # Atualiza o estado global para a dashboard
+            else:
+                sinal_final = {'horario': horario_atual_str,'ativo':'N/A','sinal':'NEUTRO 🟡','score':0,'preco_entrada':0.0}
+
             ULTIMO_SINAL.update({
                 'horario': sinal_final['horario'],
                 'ativo': sinal_final['ativo'],
@@ -223,132 +174,31 @@ def ciclo_analise():
                 'score': sinal_final['score'],
                 'preco_entrada': sinal_final['preco_entrada']
             })
-
-            print(f"[{horario_atual_str}] 📢 Novo Sinal: {ULTIMO_SINAL['ativo']} - {ULTIMO_SINAL['sinal']} (Score: {ULTIMO_SINAL['score']})")
         except Exception:
             print("Erro no ciclo_analise:")
             traceback.print_exc()
+        time.sleep(60)
 
-        # Calcula e espera o tempo exato até 5 segundos antes do fechamento do próximo minuto
-        tempo_espera = calcular_tempo_espera(segundos_antecedencia=5)
-        print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⏳ Dormindo por {tempo_espera:.2f} segundos...")
-        time.sleep(tempo_espera)
+Thread(target=ciclo_analise, daemon=True).start()
 
-# start background analysis thread
-analysis_thread = Thread(target=ciclo_analise, daemon=True)
-analysis_thread.start()
-
-# ====================== ROTA DA DASHBOARD ======================
-# ... (O código da rota '/' e o restante do script permanecem inalterados) ...
+# ====================== ROTAS ======================
 @app.route('/')
 def home():
     try:
-        assertividade_data = calcular_assertividade()
         horario_atual_brasilia = get_horario_brasilia().strftime('%H:%M:%S')
-
         sinal_exibicao = ULTIMO_SINAL['sinal']
-        horario_exibicao = ULTIMO_SINAL['horario']
-
-        if 'COMPRA FORTE' in ULTIMO_SINAL['sinal']:
-            explicacao = (
-                f"Entrada de <strong>COMPRA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
-                f"<br>Estratégia: O preço demonstrou força de alta por <strong>duas ou mais velas M1 consecutivas</strong> (Score: {ULTIMO_SINAL['score']})."
-            )
-        elif 'VENDA FORTE' in ULTIMO_SINAL['sinal']:
-            explicacao = (
-                f"Entrada de <strong>VENDA FORTE</strong> no ativo <strong>{ULTIMO_SINAL['ativo']}</strong>."
-                f"<br>Estratégia: O preço demonstrou força de baixa por <strong>duas ou mais velas M1 consecutivas</strong> (Score: {ULTIMO_SINAL['score']})."
-            )
-        else:
-            sinal_exibicao = 'SEM SINAL DE ENTRADA'
-            explicacao = (
-                "No momento, o robô está em <strong>NEUTRO</strong>. Nenhuma moeda atingiu score 2 ou -2."
-                "<br>Estratégia: Aguardando a formação de <strong>duas ou mais velas M1 consecutivas</strong> na mesma direção forte."
-            )
-
+        historico_html = formatar_historico_html(HISTORICO_SINAIS)
+        assertividade_data = calcular_assertividade()
         ultimo_sinal_hora = ULTIMO_SINAL_REGISTRADO['horario']
         ultimo_sinal_tipo = ULTIMO_SINAL_REGISTRADO['sinal_tipo']
 
-        if ultimo_sinal_tipo == 'COMPRA':
-            ultimo_sinal_cor_css = 'var(--compra-borda)'
-            ultimo_sinal_texto = f'✅ Última Entrada: COMPRA (Horário: {ultimo_sinal_hora})'
-        elif ultimo_sinal_tipo == 'VENDA':
-            ultimo_sinal_cor_css = 'var(--venda-borda)'
-            ultimo_sinal_texto = f'❌ Última Entrada: VENDA (Horário: {ultimo_sinal_hora})'
-        else:
-            ultimo_sinal_cor_css = 'var(--neutro-borda)'
-            ultimo_sinal_texto = '🟡 Nenhuma Entrada Forte Registrada'
+        if ultimo_sinal_tipo == 'COMPRA': ultimo_sinal_cor_css = 'var(--compra-borda)'; ultimo_sinal_texto=f'✅ Última Entrada: COMPRA ({ultimo_sinal_hora})'
+        elif ultimo_sinal_tipo == 'VENDA': ultimo_sinal_cor_css = 'var(--venda-borda)'; ultimo_sinal_texto=f'❌ Última Entrada: VENDA ({ultimo_sinal_hora})'
+        else: ultimo_sinal_cor_css='var(--neutro-borda)'; ultimo_sinal_texto='🟡 Nenhuma Entrada Forte Registrada'
 
-        # Prepara detalhes do sinal e histórico
-        if ULTIMO_SINAL['score'] != 0:
-            signal_details_html = f"""
-                <div class="data-item">Horário do Sinal Ativo: <strong>{horario_exibicao}</strong></div>
-                <div class="data-item">Preço de Entrada: <strong>{ULTIMO_SINAL['preco_entrada']:.5f}</strong></div>
-                <div class="data-item">Força (Score): <strong>{ULTIMO_SINAL['score']}</strong></div>
-            """
-            analise_detail_html = ""
-        else:
-            signal_details_html = ""
-            analise_detail_html = f"""
-                <div class="data-item">Última Análise do Robô: <strong>{horario_exibicao}</strong></div>
-            """
+        velas_json = json.dumps(VELAS_ATIVOS.get(ULTIMO_SINAL['ativo'], []))
 
-        historico_html = formatar_historico_html(HISTORICO_SINAIS)
-
-        # css_content usa {{ }} no literal para preservar chaves na string final
-        css_content = f'''
-        :root {{
-            --bg-primary: #1C2331;
-            --bg-secondary: #2A3346;
-            --text-primary: #DCE3F4;
-            --accent-blue: #70A0FF;
-            --neutro-fundo: #374257;
-            --neutro-borda: #4D5970;
-            --compra-fundo: #2D4C42;
-            --compra-borda: #6AA84F;
-            --venda-fundo: #5C3A3A;
-            --venda-borda: #E06666;
-            --assert-fundo: #3B3F50;
-            --assert-borda: #FFC107;
-        }}
-
-        body {{
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            font-family: 'Poppins', sans-serif;
-            padding: 10px;
-            transition: background-color 0.5s;
-        }}
-        .container {{
-            max-width: 950px;
-            margin: 20px auto;
-            background-color: var(--bg-secondary);
-            padding: 20px;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-        }}
-        h1 {{ color: var(--accent-blue); border-bottom: 1px solid var(--neutro-borda); padding-bottom: 15px; margin-bottom: 25px; text-align: center; font-weight: 600; font-size: 1.8em; }}
-        .time-box {{ background-color: #3B3F50; padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); }}
-        .current-time {{ font-size: 2.0em; font-weight: 700; color: #FFFFFF; line-height: 1.1; }}
-        .last-signal-box {{ background-color: #3B3F50; border: 1px solid #4D5970; border-left: 5px solid {ultimo_sinal_cor_css}; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 1.0em; font-weight: 500; color: var(--text-primary); text-align: center; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4); }}
-        .main-content-grid {{ display: flex; gap: 15px; margin-bottom: 25px; flex-direction: column; }}
-        @media (min-width: 768px) {{ .main-content-grid {{ flex-direction: row; }} }}
-        .sinal-box, .assertividade-box {{ flex: 1; padding: 20px; border-radius: 15px; transition: all 0.5s ease-in-out; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }}
-        .sinal-box {{ background-color: var(--neutro-fundo); border: 2px solid var(--neutro-borda); }}
-        .sinal-header {{ font-size: 1.8em; font-weight: 700; color: var(--neutro-borda); margin-bottom: 10px; }}
-        .data-item {{ margin-bottom: 8px; font-size: 1.0em; font-weight: 400; }}
-        .data-item strong {{ font-weight: 600; color: #FFFFFF; }}
-        .signal-active {{ box-shadow: 0 0 20px var(--neutro-borda); transform: translateY(-2px); }}
-        .assertividade-box {{ background-color: var(--assert-fundo); border: 2px solid var(--assert-borda); text-align: center; display:flex; flex-direction: column; justify-content:center; }}
-        pre {{ background-color: #101520; padding: 15px; border-radius: 12px; overflow:auto; color: #B0B0B0; font-size: 0.85em; }}
-        .win {{ color: var(--compra-borda); font-weight:700; }}
-        .loss {{ color: var(--venda-borda); font-weight:700; }}
-        .warning-message {{ background-color: #FFC10720; color:#FFC107; padding:8px; border-radius:8px; text-align:center; margin-bottom:15px; font-weight:500; border:1px solid #FFC107; font-size:0.9em; }}
-        .info-box {{ margin-top:25px; padding:15px; background-color:#30394c; border-left:5px solid var(--accent-blue); border-radius:8px; font-size:0.95em; line-height:1.6; color:#B0B9CC; }}
-        '''
-
-        # Monta o HTML (usar f-string segura)
-        html_content = f'''<!doctype html>
+        html_content = f"""<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -357,73 +207,71 @@ def home():
 <title>ROBÔ TRADER M1 - Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-{css_content}
+:root {{
+--bg-primary:#1C2331; --bg-secondary:#2A3346; --text-primary:#DCE3F4;
+--neutro-fundo:#374257; --neutro-borda:#4D5970;
+--compra-fundo:#2D4C42; --compra-borda:#6AA84F;
+--venda-fundo:#5C3A3A; --venda-borda:#E06666;
+--assert-fundo:#3B3F50; --assert-borda:#FFC107;
+}}
+body {{ background-color:var(--bg-primary); color:var(--text-primary); font-family:'Poppins', sans-serif; padding:10px; }}
+.container {{ max-width:1000px; margin:20px auto; background-color:var(--bg-secondary); padding:20px; border-radius:20px; }}
+h1 {{ color:#70A0FF; text-align:center; }}
+#chart {{ height:350px; width:100%; margin-bottom:20px; }}
+.last-signal-box {{ background-color:#3B3F50; border-left:5px solid {ultimo_sinal_cor_css}; padding:10px; border-radius:8px; margin-bottom:20px; text-align:center; }}
+.sinal-box {{ padding:15px; background-color:var(--neutro-fundo); border-radius:12px; margin-bottom:20px; }}
+.assertividade-box {{ padding:15px; background-color:var(--assert-fundo); border-radius:12px; text-align:center; margin-bottom:20px; }}
+pre {{ background-color:#101520; padding:15px; border-radius:12px; overflow:auto; color:#B0B0B0; }}
+.win {{ color:var(--compra-borda); font-weight:700; }}
+.loss {{ color:var(--venda-borda); font-weight:700; }}
 </style>
 </head>
 <body>
 <audio id="alertaAudio" src="{URL_ALERTE_SONORO}" preload="auto"></audio>
 <div class="container">
-    <h1>ROBÔ TRADER M1 | DASHBOARD SNIPER</h1>
-
-    <div class="time-box">
-        <p style="margin-bottom:0;">HORÁRIO ATUAL DE BRASÍLIA</p>
-        <div class="current-time">{horario_atual_brasilia}</div>
-    </div>
-
-    <div class="warning-message">
-        ⚠️ Aviso: O apito de entrada está configurado, mas o navegador pode bloqueá-lo. Clique na tela para liberar o som.
-    </div>
-
-    <div class="last-signal-box">{ultimo_sinal_texto}</div>
-
-    <div class="main-content-grid">
-        <div class="sinal-box">
-            <div class="sinal-header">SINAL ATUAL</div>
-            <div class="data-item">Sinal: <strong>{sinal_exibicao}</strong></div>
-            <div class="data-item">Ativo: <strong>{ULTIMO_SINAL['ativo']}</strong></div>
-            {signal_details_html}
-            {analise_detail_html}
-        </div>
-
-        <div class="assertividade-box">
-            <p>Assertividade</p>
-            <span>{calcular_assertividade()['percentual']}</span>
-            <p style="margin-top:8px;">Wins: {calcular_assertividade()['wins']} / Total: {calcular_assertividade()['total']}</p>
-        </div>
-    </div>
-
-    <h2>Histórico de Sinais</h2>
-    <pre>{historico_html or 'Nenhum registro ainda.'}</pre>
-
-    <div class="info-box">
-        <strong>Explicação:</strong>
-        <div style="margin-top:8px;">{explicacao}</div>
-    </div>
+<h1>ROBÔ TRADER M1 | DASHBOARD SNIPER</h1>
+<div class="last-signal-box">{ultimo_sinal_texto}</div>
+<div id="chart"></div>
+<div class="sinal-box">
+<strong>Sinal Atual:</strong> {sinal_exibicao} - Ativo: {ULTIMO_SINAL['ativo']} - Score: {ULTIMO_SINAL['score']}
+</div>
+<div class="assertividade-box">
+<p>Assertividade: {assertividade_data['percentual']}</p>
+<p>Wins: {assertividade_data['wins']} / Total: {assertividade_data['total']}</p>
+</div>
+<h2>Histórico de Sinais</h2>
+<pre>{historico_html or 'Nenhum registro ainda.'}</pre>
 </div>
 
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 <script>
+const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
+    width: document.getElementById('chart').offsetWidth,
+    height: 350,
+    layout: {{ backgroundColor:'#1C2331', textColor:'#DCE3F4' }},
+    grid: {{ vertLines: {{ color:'#2A3346' }}, horzLines: {{ color:'#2A3346' }} }}
+}});
+const candleSeries = chart.addCandlestickSeries();
+const velas = {velas_json};
+const chartData = velas.map(v => {{
+    return {{ time: v.time, open: v.open, high: v.high, low: v.low, close: v.close }};
+}});
+candleSeries.setData(chartData);
+
 document.addEventListener('click', function() {{
     var audio = document.getElementById('alertaAudio');
-    if (audio) {{
-        audio.volume = 0.8;
-        audio.play().catch(function(e){{ console.log('Áudio bloqueado: ', e); }});
-    }}
+    if(audio) {{ audio.volume=0.8; audio.play().catch(e=>console.log(e)); }}
 }});
 </script>
 </body>
-</html>
-'''
-
+</html>"""
         return Response(html_content, mimetype='text/html')
     except Exception:
         print("Erro ao gerar dashboard:")
         traceback.print_exc()
-        return Response("<h1>Erro ao gerar dashboard</h1><pre>" + traceback.format_exc() + "</pre>", mimetype='text/html')
-
+        return Response("<h1>Erro ao gerar dashboard</h1><pre>"+traceback.format_exc()+"</pre>", mimetype='text/html')
 
 # ====================== RODAR A APLICAÇÃO ======================
 if __name__ == '__main__':
-    # Porta para execução em nuvem (Render/Replit) ou local
     port = int(os.environ.get('PORT', 5000))
-    # Usar 0.0.0.0 para acessar externamente (containers)
-    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False) # Adicionei use_reloader=False para evitar que a thread rode duas vezes no modo debug
+    app.run(host='0.0.0.0', port=port, debug=True)
