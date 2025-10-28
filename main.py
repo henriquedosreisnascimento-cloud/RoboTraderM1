@@ -5,7 +5,7 @@
 from flask import Flask, Response
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from threading import Thread
 import os
@@ -68,8 +68,8 @@ def get_ultimas_velas(ativo):
 
         velas = []
         # pega as últimas velas
-        for v in data[-(NUM_VELAS_ANALISE + 1):]:
-            # v[1] = open, v[3] = close, v[4] = high, v[2] = low
+        # v[1] = open, v[3] = close, v[4] = high, v[2] = low
+        for v in data[-(NUM_VELAS_ANALISE + 1):]: 
             velas.append([float(v[1]), float(v[3]), float(v[4]), float(v[2])])
         return velas
     except Exception as e:
@@ -150,24 +150,48 @@ def formatar_historico_html(historico):
     return '\n'.join(linhas_html)
 
 # ====================== CICLO DE ANÁLISE (BACKGROUND) ======================
+def calcular_tempo_espera(segundos_antecedencia=5):
+    """Calcula o tempo de espera (em segundos) até os últimos segundos do minuto."""
+    agora = get_horario_brasilia()
+    
+    # Próximo minuto exato (Ex: 14:35:00)
+    proximo_minuto = agora.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    
+    # Tempo alvo de análise (5 segundos antes do fechamento)
+    tempo_alvo = proximo_minuto - timedelta(seconds=segundos_antecedencia)
+    
+    # Se o tempo_alvo já passou neste minuto, calcula para o próximo minuto
+    if tempo_alvo <= agora:
+        tempo_alvo += timedelta(minutes=1)
+
+    # Diferença em segundos para o tempo_alvo
+    espera_segundos = (tempo_alvo - agora).total_seconds()
+    
+    return espera_segundos
+
 def ciclo_analise():
     global ULTIMO_SINAL, ULTIMO_SINAL_CHECAR, ULTIMO_SINAL_REGISTRADO
-    time.sleep(1)
+    
+    # Sleep inicial para sincronizar com o tempo alvo
+    time.sleep(calcular_tempo_espera(segundos_antecedencia=5)) 
+
     while True:
         try:
             horario_atual_dt = get_horario_brasilia()
             horario_atual_str = horario_atual_dt.strftime('%H:%M:%S')
 
+            # Checa o resultado do sinal anterior (que expirou no minuto atual)
             if ULTIMO_SINAL_CHECAR:
                 checar_resultado_sinal(ULTIMO_SINAL_CHECAR)
                 ULTIMO_SINAL_CHECAR = None
 
-            print(f"[{horario_atual_str}] Iniciando novo ciclo de análise...")
+            print(f"[{horario_atual_str}] Iniciando novo ciclo de análise, 5s antes do fechamento da vela...")
             melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
 
             for ativo in ATIVOS_MONITORADOS:
                 velas = get_ultimas_velas(ativo)
                 analise = analisar_price_action(velas)
+                # Prioriza o melhor sinal
                 if abs(analise['score']) >= abs(melhor['score']):
                     melhor = {'ativo': ativo, **analise}
 
@@ -183,13 +207,15 @@ def ciclo_analise():
                     'preco_entrada': 0.0
                 }
 
+            # Registra o sinal forte para ser checado no próximo ciclo
             if abs(sinal_final['score']) == SCORE_MINIMO_SINAL:
                 ULTIMO_SINAL_CHECAR = copy.deepcopy(sinal_final)
                 ULTIMO_SINAL_REGISTRADO = {
                     'horario': sinal_final['horario'],
                     'sinal_tipo': 'COMPRA' if 'COMPRA' in sinal_final['sinal'] else 'VENDA'
                 }
-
+            
+            # Atualiza o estado global para a dashboard
             ULTIMO_SINAL.update({
                 'horario': sinal_final['horario'],
                 'ativo': sinal_final['ativo'],
@@ -202,13 +228,18 @@ def ciclo_analise():
         except Exception:
             print("Erro no ciclo_analise:")
             traceback.print_exc()
-        time.sleep(60)
+
+        # Calcula e espera o tempo exato até 5 segundos antes do fechamento do próximo minuto
+        tempo_espera = calcular_tempo_espera(segundos_antecedencia=5)
+        print(f"[{get_horario_brasilia().strftime('%H:%M:%S')}] ⏳ Dormindo por {tempo_espera:.2f} segundos...")
+        time.sleep(tempo_espera)
 
 # start background analysis thread
 analysis_thread = Thread(target=ciclo_analise, daemon=True)
 analysis_thread.start()
 
 # ====================== ROTA DA DASHBOARD ======================
+# ... (O código da rota '/' e o restante do script permanecem inalterados) ...
 @app.route('/')
 def home():
     try:
@@ -389,9 +420,10 @@ document.addEventListener('click', function() {{
         traceback.print_exc()
         return Response("<h1>Erro ao gerar dashboard</h1><pre>" + traceback.format_exc() + "</pre>", mimetype='text/html')
 
+
 # ====================== RODAR A APLICAÇÃO ======================
 if __name__ == '__main__':
     # Porta para execução em nuvem (Render/Replit) ou local
     port = int(os.environ.get('PORT', 5000))
     # Usar 0.0.0.0 para acessar externamente (containers)
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False) # Adicionei use_reloader=False para evitar que a thread rode duas vezes no modo debug
