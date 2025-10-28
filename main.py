@@ -9,10 +9,8 @@ from datetime import datetime
 import pytz
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor
-import os
 import copy
 import traceback
-import json
 
 # ====================== CONFIGURAÇÕES ======================
 TIMEZONE_BR = 'America/Sao_Paulo'
@@ -155,6 +153,7 @@ def analisar_ativo(ativo):
     bb_bands = calculate_bollinger_bands(velas_m1)
     momentum_buy = (c_atual > o_atual) and (c2 > o2)
     momentum_sell = (c_atual < o_atual) and (c2 < o2)
+
     def check_direction_confluence(direcao, has_momentum):
         passed_rules = 0
         if has_momentum: passed_rules += 1
@@ -164,8 +163,152 @@ def analisar_ativo(ativo):
         if direcao == 'COMPRA' and rsi_val <= RSI_OVERSOLD: passed_rules += 1
         elif direcao == 'VENDA' and rsi_val >= RSI_OVERBOUGHT: passed_rules += 1
         return (passed_rules / 3.0) * 100.0
+
     assert_buy = check_direction_confluence('COMPRA', momentum_buy)
     assert_sell = check_direction_confluence('VENDA', momentum_sell)
+
     final_sinal = 'NEUTRO 🟡'
     final_assertividade = 0.0
+
     if assert_buy >= ASSERTIVIDADE_MINIMA and assert_buy >= assert_sell:
+        final_sinal = 'COMPRA APROVADA ✅'
+        final_assertividade = assert_buy
+    elif assert_sell >= ASSERTIVIDADE_MINIMA and assert_sell >= assert_buy:
+        final_sinal = 'VENDA APROVADA ❌'
+        final_assertividade = assert_sell
+    else:
+        final_assertividade = max(assert_buy, assert_sell)
+        final_sinal = 'ENTRADA BLOQUEADA' if final_assertividade > 0 else 'NEUTRO 🟡'
+
+    return {'ativo': ativo, 'sinal': final_sinal, 'assertividade': final_assertividade, 'preco_entrada': preco_entrada}
+
+# ====================== CICLO DE ANÁLISE EM BACKGROUND ======================
+def ciclo_analise():
+    global ULTIMO_SINAL, ULTIMO_SINAL_CHECAR, ULTIMO_SINAL_REGISTRADO
+    time.sleep(1)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        while True:
+            try:
+                now_dt = get_horario_brasilia()
+                seconds_until_next_minute = 60 - now_dt.second
+                sleep_time = seconds_until_next_minute if seconds_until_next_minute != 60 else 60
+
+                if ULTIMO_SINAL_CHECAR:
+                    checar_resultado_sinal(ULTIMO_SINAL_CHECAR)
+                    with state_lock:
+                        ULTIMO_SINAL_CHECAR = None
+
+                time.sleep(sleep_time)
+
+                start_time = time.time()
+                now_dt = get_horario_brasilia()
+                horario_atual_str = now_dt.strftime('%H:%M:%S')
+                print(f"[{horario_atual_str}] Iniciando novo ciclo de análise (PARALELO)...")
+
+                melhores_sinais = list(executor.map(analisar_ativo, ATIVOS_MONITORADOS))
+                melhor = {'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'assertividade': 0.0, 'preco_entrada': 0.0}
+
+                for sinal in melhores_sinais:
+                    if sinal['assertividade'] >= melhor['assertividade']:
+                        melhor = sinal
+
+                end_time = time.time()
+                print(f"[{horario_atual_str}] Ciclo concluído em {end_time - start_time:.2f} segundos.")
+
+                sinal_final = {
+                    'horario': horario_atual_str,
+                    'ativo': melhor['ativo'],
+                    'sinal': melhor['sinal'],
+                    'assertividade': melhor['assertividade'],
+                    'preco_entrada': melhor['preco_entrada']
+                }
+
+                with state_lock:
+                    if sinal_final['assertividade'] >= ASSERTIVIDADE_MINIMA:
+                        ULTIMO_SINAL_CHECAR = copy.deepcopy(sinal_final)
+                        ULTIMO_SINAL_REGISTRADO.update({
+                            'horario': sinal_final['horario'],
+                            'sinal_tipo': 'COMPRA' if 'COMPRA' in sinal_final['sinal'] else 'VENDA'
+                        })
+
+                    ULTIMO_SINAL.update(sinal_final)
+
+                print(f"[{horario_atual_str}] 📢 Novo Sinal: {ULTIMO_SINAL['ativo']} - {ULTIMO_SINAL['sinal']} (Assertividade: {ULTIMO_SINAL['assertividade']:.0f}%)")
+            except Exception:
+                traceback.print_exc()
+                time.sleep(5)
+
+# Inicia thread de análise
+Thread(target=ciclo_analise, daemon=True).start()
+
+# ====================== DASHBOARD ======================
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>Robô Trader Dashboard</title>
+<style>
+body { font-family: Arial, sans-serif; background: #0b0b0b; color: #fff; margin:0; padding:0;}
+.header { text-align:center; padding:20px; background:#111; font-size:1.5em; font-weight:bold;}
+.container { display:flex; justify-content:space-around; padding:20px;}
+.sinal-box { padding:20px; border-radius:10px; width:30%; text-align:center; font-size:1.2em; transition:0.5s;}
+.sinal-box.green { background:#006400; border:2px solid #00ff00; }
+.sinal-box.red { background:#8b0000; border:2px solid #ff0000; }
+.sinal-box.yellow { background:#666600; border:2px solid #ffff00; }
+.historico { margin-top:20px; padding:20px; background:#111; border-radius:10px; max-height:300px; overflow-y:auto; }
+.win { color:#00ff00; font-weight:bold; }
+.loss { color:#ff3333; font-weight:bold; }
+.neutro { color:#ffff00; font-weight:bold; }
+</style>
+</head>
+<body>
+<div class="header">🚀 Robô Trader Dashboard</div>
+<div class="container">
+    <div id="sinal" class="sinal-box yellow">Carregando sinal...</div>
+    <div id="assertividade" class="sinal-box yellow">Assertividade: 0%</div>
+    <div id="ativo" class="sinal-box yellow">Ativo: N/A</div>
+</div>
+<div class="historico" id="historico">Histórico carregando...</div>
+<script>
+var evtSource = new EventSource("/stream");
+evtSource.onmessage = function(event) {
+    var data = JSON.parse(event.data);
+    var box = document.getElementById("sinal");
+    var assert_box = document.getElementById("assertividade");
+    var ativo_box = document.getElementById("ativo");
+    box.textContent = data.sinal;
+    assert_box.textContent = "Assertividade: " + data.assertividade.toFixed(0) + "%";
+    ativo_box.textContent = "Ativo: " + data.ativo;
+    box.className = "sinal-box " + (data.sinal.includes("COMPRA") ? "green" : (data.sinal.includes("VENDA") ? "red" : "yellow"));
+    assert_box.className = box.className;
+    ativo_box.className = box.className;
+    document.getElementById("historico").innerHTML = data.historico_html;
+};
+</script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/stream")
+def stream():
+    def event_stream():
+        while True:
+            with state_lock:
+                data = {
+                    "sinal": ULTIMO_SINAL['sinal'],
+                    "ativo": ULTIMO_SINAL['ativo'],
+                    "assertividade": ULTIMO_SINAL['assertividade'],
+                    "historico_html": formatar_historico_html(HISTORICO_SINAIS)
+                }
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(DASHBOARD_REFRESH_RATE_SECONDS)
+    return Response(event_stream(), mimetype="text/event-stream")
+
+# ====================== INICIAR O FLASK ======================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
