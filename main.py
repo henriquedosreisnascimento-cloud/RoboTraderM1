@@ -6,6 +6,7 @@ import requests, time, os, copy, traceback
 from datetime import datetime
 import pytz
 from threading import Thread, Lock
+import json
 
 # ====================== CONFIGURAÇÕES ======================
 TIMEZONE_BR = 'America/Sao_Paulo'
@@ -26,8 +27,13 @@ state_lock = Lock()
 def get_horario_brasilia():
     return datetime.now(pytz.timezone(TIMEZONE_BR))
 
-ULTIMO_SINAL = {'horario': get_horario_brasilia().strftime('%H:%M:%S'),
-                'ativo': 'N/A', 'sinal': 'NEUTRO 🟡', 'score': 0, 'preco_entrada': 0.0}
+ULTIMO_SINAL = {
+    'horario': get_horario_brasilia().strftime('%H:%M:%S'),
+    'ativo': 'N/A',
+    'sinal': 'NEUTRO 🟡',
+    'score': 0,
+    'preco_entrada': 0.0
+}
 
 HISTORICO_SINAIS = []
 ULTIMO_SINAL_CHECAR = None
@@ -45,7 +51,8 @@ def get_velas_kucoin(ativo):
         return []
 
 def analisar_price_action(velas):
-    if len(velas) < 2: return {'sinal':'NEUTRO 🟡','score':0,'preco_entrada':0.0}
+    if len(velas) < 2: 
+        return {'sinal':'NEUTRO 🟡','score':0,'preco_entrada':0.0}
     o1,c1 = velas[-1][0], velas[-1][1]
     o2,c2 = velas[-2][0], velas[-2][1]
     score=0
@@ -81,7 +88,12 @@ def checar_resultado_sinal(sinal_checar):
             elif h>=sl: resultado='LOSS ❌ (SL)'
             else: resultado='WIN ✅ (Close)' if c<preco_entrada else 'LOSS ❌ (Close)'
         with state_lock:
-            HISTORICO_SINAIS.append({'horario':sinal_checar['horario'],'ativo':ativo,'sinal':direcao,'resultado':resultado,'preco_entrada':preco_entrada,'preco_expiracao':c})
+            HISTORICO_SINAIS.append({'horario':sinal_checar['horario'],
+                                     'ativo':ativo,
+                                     'sinal':direcao,
+                                     'resultado':resultado,
+                                     'preco_entrada':preco_entrada,
+                                     'preco_expiracao':c})
             if len(HISTORICO_SINAIS)>MAX_HISTORICO: HISTORICO_SINAIS.pop(0)
     except:
         traceback.print_exc()
@@ -102,12 +114,19 @@ def ciclo_analise():
         try:
             now=get_horario_brasilia()
             sleep_time=60-now.second
-            if ULTIMO_SINAL_CHECAR: checar_resultado_sinal(ULTIMO_SINAL_CHECAR); ULTIMO_SINAL_CHECAR=None
+            if ULTIMO_SINAL_CHECAR: 
+                checar_resultado_sinal(ULTIMO_SINAL_CHECAR)
+                ULTIMO_SINAL_CHECAR=None
             sinais=[{'ativo':a, **analisar_price_action(get_velas_kucoin(a))} for a in ATIVOS_MONITORADOS]
             melhor=max(sinais,key=lambda x: abs(x['score']))
-            sinal_final={'horario':now.strftime('%H:%M:%S'),'ativo':melhor['ativo'],'sinal':melhor['sinal'],'score':melhor['score'],'preco_entrada':melhor['preco_entrada']}
+            sinal_final={'horario':now.strftime('%H:%M:%S'),
+                         'ativo':melhor['ativo'],
+                         'sinal':melhor['sinal'],
+                         'score':melhor['score'],
+                         'preco_entrada':melhor['preco_entrada']}
             with state_lock:
-                if abs(sinal_final['score'])>=SCORE_MINIMO_SINAL: ULTIMO_SINAL_CHECAR=copy.deepcopy(sinal_final)
+                if abs(sinal_final['score'])>=SCORE_MINIMO_SINAL:
+                    ULTIMO_SINAL_CHECAR=copy.deepcopy(sinal_final)
                 ULTIMO_SINAL.update(sinal_final)
             print(f"[{sinal_final['horario']}] 📢 {sinal_final['ativo']} - {sinal_final['sinal']} (Score:{sinal_final['score']})")
         except:
@@ -117,8 +136,7 @@ def ciclo_analise():
 Thread(target=ciclo_analise,daemon=True).start()
 
 # ====================== DASHBOARD ======================
-HTML_TEMPLATE = """
-<!DOCTYPE html>
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -130,7 +148,7 @@ body{background:#121212;color:#fff;font-family:sans-serif;margin:0;padding:0;}
 .win{color:#0f0;}
 .loss{color:#f00;}
 .neutro{color:#ff0;}
-.last-signal-box{border-left:5px solid;}
+.last-signal-box{border-left:5px solid;margin:20px;padding:10px;border-radius:5px;}
 .data-item{margin:5px 0;}
 .signal-active{animation:pulse 1s infinite;box-shadow:0 0 20px #fff;}
 @keyframes pulse{0%{transform:scale(1);}50%{transform:scale(1.05);}100%{transform:scale(1);}}
@@ -161,8 +179,7 @@ evtSource.onmessage=function(e){
 };
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 @app.route("/")
 def index(): return render_template_string(HTML_TEMPLATE)
@@ -172,7 +189,12 @@ def stream():
     def event_stream():
         while True:
             with state_lock:
-                payload={'sinal':ULTIMO_SINAL['sinal'],'ativo':ULTIMO_SINAL['ativo'],'score':ULTIMO_SINAL['score'],'preco_entrada':ULTIMO_SINAL['preco_entrada'],'horario':ULTIMO_SINAL['horario'],'historicoHtml':formatar_historico_html(HISTORICO_SINAIS)}
+                payload={'sinal':ULTIMO_SINAL['sinal'],
+                         'ativo':ULTIMO_SINAL['ativo'],
+                         'score':ULTIMO_SINAL['score'],
+                         'preco_entrada':ULTIMO_SINAL['preco_entrada'],
+                         'horario':ULTIMO_SINAL['horario'],
+                         'historicoHtml':formatar_historico_html(HISTORICO_SINAIS)}
             yield f"data: {json.dumps(payload)}\n\n"
             time.sleep(DASHBOARD_REFRESH_RATE_SECONDS)
     return Response(event_stream(), mimetype="text/event-stream")
